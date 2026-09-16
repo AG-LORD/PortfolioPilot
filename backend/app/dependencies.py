@@ -1,8 +1,22 @@
+import logging
 from collections.abc import Generator
+from uuid import UUID
 
+import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import SessionLocal
+
+logger = logging.getLogger(__name__)
+
+_jwks_client = PyJWKClient(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
+_issuer = f"{settings.supabase_url}/auth/v1"
+
+bearer_scheme = HTTPBearer()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -12,20 +26,6 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-from uuid import UUID
-
-import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWKClient
-
-from app.config import settings
-
-_jwks_client = PyJWKClient(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
-_issuer = f"{settings.supabase_url}/auth/v1"
-
-bearer_scheme = HTTPBearer()
 
 
 def get_current_user_id(
@@ -41,7 +41,10 @@ def get_current_user_id(
             issuer=_issuer,
         )
         return UUID(payload["sub"])
-    except (jwt.PyJWTError, KeyError, ValueError):
+    except (jwt.PyJWTError, KeyError, ValueError) as exc:
+        logger.warning(
+            "JWT verification failed: %s: %s", type(exc).__name__, exc
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",

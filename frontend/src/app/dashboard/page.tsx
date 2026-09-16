@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { apiFetch } from "@/lib/api";
 
 type Portfolio = {
   id: string;
@@ -16,34 +17,30 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-  const supabase = createClient();
+    const supabase = createClient();
 
-  async function fetchPortfolios(accessToken: string) {
-  const res = await fetch("http://127.0.0.1:8000/portfolios", {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  const bodyText = await res.text();
-
-  if (!res.ok) {
-    setError(`Status ${res.status} | token length ${accessToken.length} | body: ${bodyText}`);
-    return;
-  }
-
-  setPortfolios(JSON.parse(bodyText));
-}
-
-
-  const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-    if (session) {
-      fetchPortfolios(session.access_token);
-    } else {
-      setError("No active session.");
+    async function loadPortfolios(accessToken: string) {
+      try {
+        const data = await apiFetch<Portfolio[]>("/portfolios", accessToken);
+        setPortfolios(data);
+      } catch (err) {
+        console.error("Failed to load portfolios:", err);
+        setError("Unable to load your portfolios. Please try again.");
+      }
     }
-  });
 
-  return () => subscription.unsubscribe();
-}, []);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        loadPortfolios(session.access_token);
+      } else {
+        setError("No active session.");
+      }
+    });
 
+    return () => subscription.unsubscribe();
+  }, []);
 
   if (error) return <div style={{ padding: 40 }}>{error}</div>;
   if (!portfolios) return <div style={{ padding: 40 }}>Loading...</div>;

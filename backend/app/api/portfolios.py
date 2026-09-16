@@ -1,9 +1,19 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user_id, get_db
+from app.schemas.holding import HoldingRead
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead
-from app.services.portfolios import create_portfolio
+from app.schemas.transaction import TransactionCreate, TransactionRead
+from app.services.portfolios import (
+    create_portfolio,
+    get_portfolio,
+    list_holdings,
+    list_portfolios,
+)
+from app.services.transactions import execute_transaction, list_transactions
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -15,10 +25,6 @@ def create_own_portfolio(
     db: Session = Depends(get_db),
 ):
     return create_portfolio(db, user_id, data)
-
-from uuid import UUID
-
-from app.services.portfolios import create_portfolio, list_portfolios, get_portfolio
 
 
 @router.get("", response_model=list[PortfolioRead])
@@ -37,9 +43,6 @@ def read_own_portfolio(
 ):
     return get_portfolio(db, user_id, portfolio_id)
 
-from app.schemas.transaction import TransactionCreate, TransactionRead
-from app.services.transactions import execute_transaction
-
 
 @router.post("/{portfolio_id}/transactions", response_model=TransactionRead)
 def create_transaction(
@@ -49,10 +52,6 @@ def create_transaction(
     db: Session = Depends(get_db),
 ):
     return execute_transaction(db, user_id, portfolio_id, data)
-
-from app.schemas.holding import HoldingRead
-from app.services.portfolios import list_holdings
-from app.services.transactions import list_transactions
 
 
 @router.get("/{portfolio_id}/holdings", response_model=list[HoldingRead])
