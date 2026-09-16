@@ -39,6 +39,7 @@ def get_current_user_id(
             algorithms=["ES256"],
             audience=settings.supabase_jwt_audience,
             issuer=_issuer,
+            leeway=10,
         )
         return UUID(payload["sub"])
     except (jwt.PyJWTError, KeyError, ValueError) as exc:

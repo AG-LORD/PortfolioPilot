@@ -1,19 +1,27 @@
+import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user_id, get_db
 from app.schemas.holding import HoldingRead
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead
+from app.schemas.portfolio_snapshot import PortfolioSnapshotRead
 from app.schemas.transaction import TransactionCreate, TransactionRead
+from app.schemas.valuation import PortfolioValuation
+from app.services.market_data import MarketDataUnavailableError
 from app.services.portfolios import (
     create_portfolio,
     get_portfolio,
     list_holdings,
     list_portfolios,
 )
+from app.services.snapshots import create_portfolio_snapshot
 from app.services.transactions import execute_transaction, list_transactions
+from app.services.valuation import get_portfolio_valuation
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -70,3 +78,35 @@ def read_portfolio_transactions(
     db: Session = Depends(get_db),
 ):
     return list_transactions(db, user_id, portfolio_id)
+
+
+@router.get("/{portfolio_id}/valuation", response_model=PortfolioValuation)
+def read_portfolio_valuation(
+    portfolio_id: UUID,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_portfolio_valuation(db, user_id, portfolio_id)
+    except MarketDataUnavailableError as exc:
+        logger.warning("Valuation failed for portfolio %s: %s", portfolio_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Market data is currently unavailable. Please try again later.",
+        )
+
+
+@router.post("/{portfolio_id}/snapshots", response_model=PortfolioSnapshotRead)
+def create_snapshot(
+    portfolio_id: UUID,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    try:
+        return create_portfolio_snapshot(db, user_id, portfolio_id)
+    except MarketDataUnavailableError as exc:
+        logger.warning("Snapshot failed for portfolio %s: %s", portfolio_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Market data is currently unavailable. Please try again later.",
+        )
