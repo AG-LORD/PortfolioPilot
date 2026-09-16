@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { apiFetch } from "@/lib/api";
 
@@ -48,11 +49,16 @@ export default function DashboardPage() {
   return (
     <div style={{ padding: 40 }}>
       <h1>Your Portfolios</h1>
+      <p>
+        <Link href="/dashboard/new-portfolio">Create Portfolio</Link>
+      </p>
       {portfolios.length === 0 && <p>No portfolios yet.</p>}
       <ul>
         {portfolios.map((p) => (
           <li key={p.id}>
-            {p.name} — {p.base_currency} {p.cash_balance} cash (of {p.initial_capital} initial)
+            <Link href={`/dashboard/portfolios/${p.id}`}>
+              {p.name} — {p.base_currency} {p.cash_balance} cash (of {p.initial_capital} initial)
+            </Link>
           </li>
         ))}
       </ul>
