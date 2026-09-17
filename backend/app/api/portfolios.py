@@ -163,7 +163,9 @@ def read_portfolio_target_allocation(
                 expected_return=w.expected_return,
             )
             for w in weights
+            for w in weights.allocations
         ],
+        cash_weight=weights.cash_weight,
     )
 
 

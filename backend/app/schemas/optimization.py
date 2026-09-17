@@ -13,3 +13,4 @@ class TargetAllocationItem(BaseModel):
 class TargetAllocationRead(BaseModel):
     portfolio_id: UUID
     allocations: list[TargetAllocationItem]
+    cash_weight: Decimal

@@ -33,6 +33,15 @@ class TargetWeight:
     expected_return: Decimal
 
 
+@dataclass
+class TargetAllocationResult:
+    allocations: list[TargetWeight]
+    cash_weight: Decimal
+
+    def __iter__(self):
+        return iter(self.allocations)
+
+
 def optimize_target_weights(
     tickers: list[str],
     expected_returns: list[Decimal],
@@ -42,9 +51,15 @@ def optimize_target_weights(
     max_sector_weight: Decimal | None = None,
     sector_map: dict[str, str] | None = None,
 ) -> list[TargetWeight]:
+) -> TargetAllocationResult:
     n = len(tickers)
     if n == 0:
         raise OptimizationError("No tickers to optimize.")
+
+    if target_volatility < 0:
+        raise InfeasibleAllocationError("target_volatility cannot be negative.")
+    if max_position_weight <= 0:
+        raise InfeasibleAllocationError("max_position_weight must be strictly positive.")
 
     mu = np.array([float(r) for r in expected_returns])
     sigma = np.array([[float(v) for v in row] for row in covariance])
@@ -52,10 +67,13 @@ def optimize_target_weights(
     target_vol = float(target_volatility)
 
     bounds = [(0.0, max_pos) for _ in range(n)]
+    # Variables: n asset weights followed by cash weight
+    bounds = [(0.0, max_pos) for _ in range(n)] + [(0.0, 1.0)]
 
     constraints = [
         {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
         {"type": "ineq", "fun": lambda w: target_vol - np.sqrt(w @ sigma @ w)},
+        {"type": "ineq", "fun": lambda w: target_vol - np.sqrt(max(w[:n] @ sigma @ w[:n], 0.0))},
     ]
 
     # Sector constraint only applied where sector data is actually
@@ -73,9 +91,12 @@ def optimize_target_weights(
             constraints.append({"type": "ineq", "fun": sector_constraint})
 
     x0 = np.full(n, 1.0 / n)
+    init_asset_weight = min(max_pos / 2.0, 0.5 / n)
+    x0 = np.array([init_asset_weight] * n + [1.0 - n * init_asset_weight])
 
     result = minimize(
         lambda w: -np.dot(w, mu),
+        lambda w: -np.dot(w[:n], mu),
         x0,
         method="SLSQP",
         bounds=bounds,
@@ -84,13 +105,21 @@ def optimize_target_weights(
     )
 
     weights = result.x
+    asset_weights = weights[:n]
+    cash_val = weights[n]
     tol = 1e-4
+    portfolio_vol = np.sqrt(max(asset_weights @ sigma @ asset_weights, 0.0))
     feasible = (
         result.success
         and abs(np.sum(weights) - 1.0) < 1e-4
         and np.all(weights >= -tol)
         and np.all(weights <= max_pos + tol)
         and np.sqrt(max(weights @ sigma @ weights, 0.0)) <= target_vol + tol
+        and abs(np.sum(weights) - 1.0) < tol
+        and np.all(asset_weights >= -tol)
+        and cash_val >= -tol
+        and np.all(asset_weights <= max_pos + tol)
+        and portfolio_vol <= target_vol + tol
     )
     if not feasible:
         raise InfeasibleAllocationError(
@@ -99,18 +128,30 @@ def optimize_target_weights(
         )
 
     return [
+    allocations = [
         TargetWeight(
             ticker=ticker,
             target_weight=Decimal(str(round(max(weight, 0.0), 6))),
             expected_return=Decimal(str(round(mu[i], 6))),
         )
         for i, (ticker, weight) in enumerate(zip(tickers, weights))
+        for i, (ticker, weight) in enumerate(zip(tickers, asset_weights))
     ]
+    allocated = sum(w.target_weight for w in allocations)
+    if allocated > Decimal("1"):
+        allocated = Decimal("1")
+    cash_weight = Decimal("1") - allocated
+
+    return TargetAllocationResult(
+        allocations=allocations,
+        cash_weight=cash_weight,
+    )
 
 
 def get_portfolio_target_allocation(
     db: Session, user_id: UUID, portfolio_id: UUID
 ) -> list[TargetWeight]:
+) -> TargetAllocationResult:
     portfolio = get_portfolio(db, user_id, portfolio_id)
     holdings = list_holdings(db, user_id, portfolio_id)
 

@@ -185,6 +185,11 @@ def calculate_risk_analytics(
             "observation(s)); at least 3 snapshots with 2 usable returns are needed "
             "for volatility and Sharpe ratio."
         )
+    elif len(returns) < MIN_VAR_RETURN_OBSERVATIONS:
+        message = (
+            f"Only {len(returns)} usable return observation(s) available; at least "
+            f"{MIN_VAR_RETURN_OBSERVATIONS} are needed for Historical VaR and CVaR."
+        )
 
     return RiskAnalyticsResult(
         observation_count=len(returns),
