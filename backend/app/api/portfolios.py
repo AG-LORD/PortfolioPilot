@@ -1,4 +1,6 @@
 import logging
+from dataclasses import asdict
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,6 +10,7 @@ from app.dependencies import get_current_user_id, get_db
 from app.schemas.holding import HoldingRead
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead
 from app.schemas.portfolio_snapshot import PortfolioSnapshotRead
+from app.schemas.risk_analytics import RiskAnalyticsRead
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.schemas.valuation import PortfolioValuation
 from app.services.market_data import MarketDataUnavailableError
@@ -17,6 +20,7 @@ from app.services.portfolios import (
     list_holdings,
     list_portfolios,
 )
+from app.services.risk_analytics import DEFAULT_RISK_FREE_RATE_ANNUAL, get_portfolio_risk_analytics
 from app.services.snapshots import create_portfolio_snapshot
 from app.services.transactions import execute_transaction, list_transactions
 from app.services.valuation import get_portfolio_valuation
@@ -94,6 +98,17 @@ def read_portfolio_valuation(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Market data is currently unavailable. Please try again later.",
         )
+
+
+@router.get("/{portfolio_id}/risk", response_model=RiskAnalyticsRead)
+def read_portfolio_risk(
+    portfolio_id: UUID,
+    risk_free_rate_annual: Decimal = DEFAULT_RISK_FREE_RATE_ANNUAL,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    result = get_portfolio_risk_analytics(db, user_id, portfolio_id, risk_free_rate_annual)
+    return RiskAnalyticsRead(portfolio_id=portfolio_id, **asdict(result))
 
 
 @router.post("/{portfolio_id}/snapshots", response_model=PortfolioSnapshotRead)

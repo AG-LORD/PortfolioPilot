@@ -50,6 +50,19 @@ type PortfolioValuation = {
   holdings: HoldingValuation[];
 };
 
+type RiskAnalytics = {
+  portfolio_id: string;
+  observation_count: number;
+  first_snapshot_date: string | null;
+  last_snapshot_date: string | null;
+  cumulative_return: string | null;
+  annualized_volatility: string | null;
+  max_drawdown: string | null;
+  sharpe_ratio: string | null;
+  risk_free_rate_annual: string;
+  message: string | null;
+};
+
 export default function PortfolioDetailPage() {
   const { portfolioId } = useParams<{ portfolioId: string }>();
 
@@ -57,12 +70,14 @@ export default function PortfolioDetailPage() {
   const [holdings, setHoldings] = useState<Holding[] | null>(null);
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
   const [valuation, setValuation] = useState<PortfolioValuation | null>(null);
+  const [riskAnalytics, setRiskAnalytics] = useState<RiskAnalytics | null>(null);
 
   const [authError, setAuthError] = useState<string | null>(null);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [holdingsError, setHoldingsError] = useState<string | null>(null);
   const [transactionsError, setTransactionsError] = useState<string | null>(null);
   const [valuationError, setValuationError] = useState<string | null>(null);
+  const [riskAnalyticsError, setRiskAnalyticsError] = useState<string | null>(null);
 
   useEffect(() => {
     const supabase = createClient();
@@ -98,6 +113,15 @@ export default function PortfolioDetailPage() {
       } catch (err) {
         console.error("Failed to load valuation:", err);
         setValuationError("Live valuation is currently unavailable.");
+      }
+
+      try {
+        setRiskAnalytics(
+          await apiFetch<RiskAnalytics>(`/portfolios/${portfolioId}/risk`, accessToken),
+        );
+      } catch (err) {
+        console.error("Failed to load risk analytics:", err);
+        setRiskAnalyticsError("Risk analytics are currently unavailable.");
       }
     }
 
@@ -138,6 +162,22 @@ export default function PortfolioDetailPage() {
           <li>Invested Value: {valuation.invested_value}</li>
           <li>Unrealized P&amp;L: {valuation.unrealized_pnl}</li>
         </ul>
+      )}
+
+      <h2>Risk Analytics</h2>
+      {riskAnalyticsError && <p>{riskAnalyticsError}</p>}
+      {!riskAnalyticsError && riskAnalytics === null && <p>Loading risk analytics...</p>}
+      {riskAnalytics !== null && (
+        <>
+          <ul>
+            <li>Annualized Volatility: {riskAnalytics.annualized_volatility ?? "Not enough data yet"}</li>
+            <li>Cumulative Return: {riskAnalytics.cumulative_return ?? "Not enough data yet"}</li>
+            <li>Maximum Drawdown: {riskAnalytics.max_drawdown ?? "Not enough data yet"}</li>
+            <li>Sharpe Ratio: {riskAnalytics.sharpe_ratio ?? "Not enough data yet"}</li>
+            <li>Observation Count: {riskAnalytics.observation_count}</li>
+          </ul>
+          {riskAnalytics.message && <p>{riskAnalytics.message}</p>}
+        </>
       )}
 
       <h2>Holdings</h2>

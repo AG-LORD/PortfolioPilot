@@ -73,3 +73,13 @@ def create_portfolio_snapshot(db: Session, user_id: UUID, portfolio_id: UUID) ->
     db.commit()
     db.refresh(snapshot)
     return snapshot
+
+
+def list_snapshots(db: Session, user_id: UUID, portfolio_id: UUID) -> list[PortfolioSnapshot]:
+    get_portfolio(db, user_id, portfolio_id)
+    return (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.portfolio_id == portfolio_id)
+        .order_by(PortfolioSnapshot.snapshot_date.asc())
+        .all()
+    )
