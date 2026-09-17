@@ -24,6 +24,8 @@ from app.services.snapshots import MARKET_TIMEZONE, list_snapshots
 
 ANNUALIZATION_FACTOR = 252
 DEFAULT_RISK_FREE_RATE_ANNUAL = Decimal("0")
+DEFAULT_VAR_CONFIDENCE = Decimal("0.95")
+MIN_VAR_RETURN_OBSERVATIONS = 20
 
 
 @dataclass
@@ -42,6 +44,9 @@ class RiskAnalyticsResult:
     max_drawdown: Decimal | None
     sharpe_ratio: Decimal | None
     risk_free_rate_annual: Decimal
+    historical_var: Decimal | None
+    historical_cvar: Decimal | None
+    var_confidence: Decimal
     message: str | None
 
 
@@ -96,11 +101,65 @@ def calculate_sharpe_ratio(returns: list[Decimal], risk_free_rate_annual: Decima
     return (mean_excess / std) * Decimal(ANNUALIZATION_FACTOR).sqrt()
 
 
+def calculate_historical_var(
+    returns: list[Decimal],
+    confidence: Decimal = DEFAULT_VAR_CONFIDENCE,
+) -> Decimal | None:
+    if not isinstance(confidence, Decimal):
+        confidence = Decimal(str(confidence))
+    if confidence <= Decimal("0") or confidence >= Decimal("1"):
+        raise ValueError(f"Confidence must be strictly between 0 and 1, got {confidence}")
+
+    if len(returns) < MIN_VAR_RETURN_OBSERVATIONS:
+        return None
+
+    losses = sorted(-r for r in returns)
+    n = len(losses)
+    position = confidence * Decimal(n - 1)
+    lower_idx = int(position)
+    fraction = position - Decimal(lower_idx)
+
+    if lower_idx >= n - 1:
+        return losses[-1]
+
+    return losses[lower_idx] + fraction * (losses[lower_idx + 1] - losses[lower_idx])
+
+
+def calculate_historical_cvar(
+    returns: list[Decimal],
+    confidence: Decimal = DEFAULT_VAR_CONFIDENCE,
+) -> Decimal | None:
+    if not isinstance(confidence, Decimal):
+        confidence = Decimal(str(confidence))
+    if confidence <= Decimal("0") or confidence >= Decimal("1"):
+        raise ValueError(f"Confidence must be strictly between 0 and 1, got {confidence}")
+
+    if len(returns) < MIN_VAR_RETURN_OBSERVATIONS:
+        return None
+
+    var = calculate_historical_var(returns, confidence)
+    if var is None:
+        return None
+
+    losses = sorted(-r for r in returns)
+    tail_losses = [loss for loss in losses if loss >= var]
+    if not tail_losses:
+        return var
+
+    return sum(tail_losses) / Decimal(len(tail_losses))
+
+
 def calculate_risk_analytics(
     points: list[SnapshotPoint],
     initial_capital: Decimal,
     risk_free_rate_annual: Decimal = DEFAULT_RISK_FREE_RATE_ANNUAL,
+    var_confidence: Decimal = DEFAULT_VAR_CONFIDENCE,
 ) -> RiskAnalyticsResult:
+    if not isinstance(var_confidence, Decimal):
+        var_confidence = Decimal(str(var_confidence))
+    if var_confidence <= Decimal("0") or var_confidence >= Decimal("1"):
+        raise ValueError(f"var_confidence must be strictly between 0 and 1, got {var_confidence}")
+
     if not points:
         return RiskAnalyticsResult(
             observation_count=0,
@@ -111,6 +170,9 @@ def calculate_risk_analytics(
             max_drawdown=None,
             sharpe_ratio=None,
             risk_free_rate_annual=risk_free_rate_annual,
+            historical_var=None,
+            historical_cvar=None,
+            var_confidence=var_confidence,
             message="No snapshot history exists for this portfolio yet.",
         )
 
@@ -133,6 +195,9 @@ def calculate_risk_analytics(
         max_drawdown=calculate_max_drawdown(points),
         sharpe_ratio=calculate_sharpe_ratio(returns, risk_free_rate_annual),
         risk_free_rate_annual=risk_free_rate_annual,
+        historical_var=calculate_historical_var(returns, var_confidence),
+        historical_cvar=calculate_historical_cvar(returns, var_confidence),
+        var_confidence=var_confidence,
         message=message,
     )
 
@@ -142,6 +207,7 @@ def get_portfolio_risk_analytics(
     user_id: UUID,
     portfolio_id: UUID,
     risk_free_rate_annual: Decimal = DEFAULT_RISK_FREE_RATE_ANNUAL,
+    var_confidence: Decimal = DEFAULT_VAR_CONFIDENCE,
 ) -> RiskAnalyticsResult:
     portfolio = get_portfolio(db, user_id, portfolio_id)
     snapshots = list_snapshots(db, user_id, portfolio_id)
@@ -157,4 +223,9 @@ def get_portfolio_risk_analytics(
         for snapshot in snapshots
     ]
 
-    return calculate_risk_analytics(points, portfolio.initial_capital, risk_free_rate_annual)
+    return calculate_risk_analytics(
+        points,
+        portfolio.initial_capital,
+        risk_free_rate_annual=risk_free_rate_annual,
+        var_confidence=var_confidence,
+    )

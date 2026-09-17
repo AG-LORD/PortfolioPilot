@@ -50,6 +50,17 @@ type PortfolioValuation = {
   holdings: HoldingValuation[];
 };
 
+type TargetAllocationItem = {
+  ticker: string;
+  target_weight: string;
+  expected_return: string;
+};
+
+type TargetAllocation = {
+  portfolio_id: string;
+  allocations: TargetAllocationItem[];
+};
+
 type RiskAnalytics = {
   portfolio_id: string;
   observation_count: number;
@@ -60,6 +71,9 @@ type RiskAnalytics = {
   max_drawdown: string | null;
   sharpe_ratio: string | null;
   risk_free_rate_annual: string;
+  historical_var: string | null;
+  historical_cvar: string | null;
+  var_confidence: string;
   message: string | null;
 };
 
@@ -71,6 +85,7 @@ export default function PortfolioDetailPage() {
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
   const [valuation, setValuation] = useState<PortfolioValuation | null>(null);
   const [riskAnalytics, setRiskAnalytics] = useState<RiskAnalytics | null>(null);
+  const [targetAllocation, setTargetAllocation] = useState<TargetAllocation | null>(null);
 
   const [authError, setAuthError] = useState<string | null>(null);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
@@ -78,6 +93,7 @@ export default function PortfolioDetailPage() {
   const [transactionsError, setTransactionsError] = useState<string | null>(null);
   const [valuationError, setValuationError] = useState<string | null>(null);
   const [riskAnalyticsError, setRiskAnalyticsError] = useState<string | null>(null);
+  const [targetAllocationError, setTargetAllocationError] = useState<string | null>(null);
 
   useEffect(() => {
     const supabase = createClient();
@@ -122,6 +138,15 @@ export default function PortfolioDetailPage() {
       } catch (err) {
         console.error("Failed to load risk analytics:", err);
         setRiskAnalyticsError("Risk analytics are currently unavailable.");
+      }
+
+      try {
+        setTargetAllocation(
+          await apiFetch<TargetAllocation>(`/portfolios/${portfolioId}/optimize`, accessToken),
+        );
+      } catch (err) {
+        console.error("Failed to load target allocation:", err);
+        setTargetAllocationError("Target allocation is currently unavailable.");
       }
     }
 
@@ -174,10 +199,43 @@ export default function PortfolioDetailPage() {
             <li>Cumulative Return: {riskAnalytics.cumulative_return ?? "Not enough data yet"}</li>
             <li>Maximum Drawdown: {riskAnalytics.max_drawdown ?? "Not enough data yet"}</li>
             <li>Sharpe Ratio: {riskAnalytics.sharpe_ratio ?? "Not enough data yet"}</li>
+            <li>
+              Historical VaR ({Number(riskAnalytics.var_confidence) * 100}%):{" "}
+              {riskAnalytics.historical_var ?? "Not enough data yet"}
+            </li>
+            <li>
+              Historical CVaR ({Number(riskAnalytics.var_confidence) * 100}%):{" "}
+              {riskAnalytics.historical_cvar ?? "Not enough data yet"}
+            </li>
             <li>Observation Count: {riskAnalytics.observation_count}</li>
           </ul>
           {riskAnalytics.message && <p>{riskAnalytics.message}</p>}
         </>
+      )}
+
+      <h2>Target Allocation</h2>
+      {targetAllocationError && <p>{targetAllocationError}</p>}
+      {!targetAllocationError && targetAllocation === null && <p>Loading target allocation...</p>}
+      {targetAllocation !== null && targetAllocation.allocations.length === 0 && (
+        <p>No target allocation available.</p>
+      )}
+      {targetAllocation !== null && targetAllocation.allocations.length > 0 && (
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Target Weight</th>
+            </tr>
+          </thead>
+          <tbody>
+            {targetAllocation.allocations.map((a) => (
+              <tr key={a.ticker}>
+                <td>{a.ticker}</td>
+                <td>{a.target_weight}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       <h2>Holdings</h2>

@@ -1,15 +1,22 @@
-from datetime import date
+from datetime import date, datetime
+from datetime import time as time_of_day
 from decimal import Decimal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
 
+from app.models import PortfolioSnapshot
 from app.services.risk_analytics import (
     ANNUALIZATION_FACTOR,
+    DEFAULT_VAR_CONFIDENCE,
+    MIN_VAR_RETURN_OBSERVATIONS,
     SnapshotPoint,
     calculate_cumulative_return,
     calculate_daily_returns,
+    calculate_historical_cvar,
+    calculate_historical_var,
     calculate_max_drawdown,
     calculate_risk_analytics,
     calculate_sharpe_ratio,
@@ -186,7 +193,13 @@ def test_risk_analytics_three_plus_snapshots_enables_volatility_and_sharpe():
     assert result.observation_count == 3
     assert result.annualized_volatility is not None
     assert result.sharpe_ratio is not None
-    assert result.message is None
+    # 3 usable returns is enough for volatility/Sharpe (>=2) but not for
+    # VaR/CVaR (needs 20) — the message should now explain that gap rather
+    # than being None, since VaR/CVaR are None here.
+    assert result.historical_var is None
+    assert result.historical_cvar is None
+    assert result.message is not None
+    assert "VaR" in result.message
 
 
 def test_risk_analytics_irregular_snapshot_dates_still_produces_result():
@@ -218,3 +231,197 @@ def test_risk_analytics_unauthorized_access_raises_404(db_session, test_portfoli
     with pytest.raises(HTTPException) as exc_info:
         get_portfolio_risk_analytics(db_session, uuid4(), portfolio.id)
     assert exc_info.value.status_code == 404
+
+
+# --- Historical VaR and CVaR -----------------------------------------------
+
+
+def test_var_returns_none_with_fewer_than_20_observations():
+    assert calculate_historical_var([]) is None
+    assert calculate_historical_var([Decimal("0.01")]) is None
+    returns_19 = [Decimal("0.01")] * 19
+    assert calculate_historical_var(returns_19) is None
+
+
+def test_cvar_returns_none_with_fewer_than_20_observations():
+    assert calculate_historical_cvar([]) is None
+    assert calculate_historical_cvar([Decimal("0.01")]) is None
+    returns_19 = [Decimal("0.01")] * 19
+    assert calculate_historical_cvar(returns_19) is None
+
+
+def test_var_uses_loss_distribution_correctly():
+    # 20 returns: -0.01, -0.02, ..., -0.20
+    # Losses = -return: 0.01, 0.02, ..., 0.20
+    # Sorted losses: 0.01, 0.02, ..., 0.20
+    # Percentile position at 95%: 0.95 * 19 = 18.05
+    # losses[18] = 0.19, losses[19] = 0.20
+    # VaR = 0.19 + 0.05 * (0.20 - 0.19) = 0.1905
+    returns = [Decimal("-0.01") * i for i in range(1, 21)]
+    var = calculate_historical_var(returns, Decimal("0.95"))
+    assert var == Decimal("0.1905")
+
+
+def test_cvar_greater_than_or_equal_to_var_for_loss_tail():
+    # For returns = -1% to -20%:
+    # VaR(0.95) = 0.1905.
+    # Losses >= 0.1905: [0.20]
+    # CVaR = 0.20 >= 0.1905
+    returns = [Decimal("-0.01") * i for i in range(1, 21)]
+    var_95 = calculate_historical_var(returns, Decimal("0.95"))
+    cvar_95 = calculate_historical_cvar(returns, Decimal("0.95"))
+    assert var_95 is not None and cvar_95 is not None
+    assert cvar_95 >= var_95
+    assert cvar_95 == Decimal("0.20")
+
+    # For confidence 0.80:
+    # position = 0.80 * 19 = 15.2
+    # VaR = losses[15] + 0.2 * (losses[16] - losses[15]) = 0.16 + 0.002 = 0.162
+    # Losses >= 0.162: [0.17, 0.18, 0.19, 0.20]
+    # CVaR = (0.17 + 0.18 + 0.19 + 0.20) / 4 = 0.185
+    var_80 = calculate_historical_var(returns, Decimal("0.80"))
+    cvar_80 = calculate_historical_cvar(returns, Decimal("0.80"))
+    assert var_80 == Decimal("0.162")
+    assert cvar_80 == Decimal("0.185")
+    assert cvar_80 >= var_80
+
+
+def test_different_confidence_levels_produce_non_decreasing_var():
+    returns = [Decimal("-0.01") * i for i in range(1, 21)]
+    var_90 = calculate_historical_var(returns, Decimal("0.90"))
+    var_95 = calculate_historical_var(returns, Decimal("0.95"))
+    var_99 = calculate_historical_var(returns, Decimal("0.99"))
+    assert var_90 is not None and var_95 is not None and var_99 is not None
+    assert var_90 < var_95 < var_99
+
+
+def test_invalid_confidence_values_rejected():
+    returns = [Decimal("0.01")] * 20
+    for invalid in [Decimal("0"), Decimal("1"), Decimal("-0.1"), Decimal("1.5")]:
+        with pytest.raises(ValueError):
+            calculate_historical_var(returns, invalid)
+        with pytest.raises(ValueError):
+            calculate_historical_cvar(returns, invalid)
+        with pytest.raises(ValueError):
+            calculate_risk_analytics([], Decimal("100000"), var_confidence=invalid)
+
+
+def test_risk_analytics_orchestration_var_none_for_insufficient_observations():
+    points = [SnapshotPoint(date=date(2026, 1, i), total_value=Decimal("100") + Decimal(i)) for i in range(1, 16)]
+    result = calculate_risk_analytics(points, Decimal("100"))
+    assert result.observation_count == 14
+    assert result.annualized_volatility is not None
+    assert result.historical_var is None
+    assert result.historical_cvar is None
+    assert result.var_confidence == DEFAULT_VAR_CONFIDENCE
+
+
+def test_risk_analytics_orchestration_exposes_var_cvar_with_enough_observations():
+    # 21 snapshots yield 20 returns
+    points = [SnapshotPoint(date=date(2026, 1, 1), total_value=Decimal("1000"))]
+    for i in range(2, 22):
+        points.append(SnapshotPoint(date=date(2026, 1, i), total_value=points[-1].total_value - Decimal("10")))
+    result = calculate_risk_analytics(points, Decimal("1000"), var_confidence=Decimal("0.95"))
+    assert result.observation_count == 20
+    assert result.historical_var is not None
+    assert result.historical_cvar is not None
+    assert result.historical_cvar >= result.historical_var
+    assert result.var_confidence == Decimal("0.95")
+
+
+def test_risk_analytics_zero_snapshots_has_none_var_cvar():
+    result = calculate_risk_analytics([], Decimal("100000"), var_confidence=Decimal("0.90"))
+    assert result.observation_count == 0
+    assert result.historical_var is None
+    assert result.historical_cvar is None
+    assert result.var_confidence == Decimal("0.90")
+    assert result.message == "No snapshot history exists for this portfolio yet."
+
+
+def test_get_portfolio_risk_analytics_passes_through_var_confidence(db_session, test_portfolio):
+    user_id, portfolio = test_portfolio
+    result = get_portfolio_risk_analytics(
+        db_session,
+        user_id,
+        portfolio.id,
+        var_confidence=Decimal("0.99"),
+    )
+    assert result.var_confidence == Decimal("0.99")
+    assert result.historical_var is None
+    assert result.historical_cvar is None
+
+
+def test_get_portfolio_risk_analytics_propagates_confidence_through_real_history(
+    db_session, test_portfolio
+):
+    # Insert 21 real snapshots -> 20 usable returns, meeting
+    # MIN_VAR_RETURN_OBSERVATIONS, through the actual DB-backed orchestration
+    # path (not the pure function directly), to prove var_confidence reaches
+    # the calculation end-to-end, not just that the response echoes it.
+    user_id, portfolio = test_portfolio
+    ist = ZoneInfo("Asia/Kolkata")
+
+    value = Decimal("1000")
+    for i in range(21):
+        snapshot_date = datetime.combine(date(2026, 2, 1 + i), time_of_day.min, tzinfo=ist)
+        db_session.add(
+            PortfolioSnapshot(
+                portfolio_id=portfolio.id,
+                snapshot_date=snapshot_date,
+                total_value=value,
+                cash_balance=value,
+                invested_value=Decimal("0"),
+                daily_return=None,
+                cumulative_return=None,
+            )
+        )
+        value += Decimal("5") if i % 2 == 0 else Decimal("-8")
+    db_session.commit()
+
+    result_90 = get_portfolio_risk_analytics(
+        db_session, user_id, portfolio.id, var_confidence=Decimal("0.90")
+    )
+    result_95 = get_portfolio_risk_analytics(
+        db_session, user_id, portfolio.id, var_confidence=Decimal("0.95")
+    )
+
+    assert result_90.observation_count == 20
+    assert result_90.var_confidence == Decimal("0.90")
+    assert result_95.var_confidence == Decimal("0.95")
+    assert result_90.historical_var is not None
+    assert result_95.historical_var is not None
+    # Different confidence levels over a non-constant loss distribution must
+    # produce different VaR values — this is what actually proves
+    # var_confidence reaches calculate_historical_var, not just that it's
+    # echoed back unchanged in the response.
+    assert result_90.historical_var != result_95.historical_var
+
+
+def test_read_portfolio_risk_route_with_custom_confidence(db_session, test_portfolio):
+    from app.api.portfolios import read_portfolio_risk
+    user_id, portfolio = test_portfolio
+    response = read_portfolio_risk(
+        portfolio_id=portfolio.id,
+        var_confidence=Decimal("0.90"),
+        user_id=user_id,
+        db=db_session,
+    )
+    assert response.var_confidence == Decimal("0.90")
+    assert response.historical_var is None
+    assert response.historical_cvar is None
+
+
+def test_read_portfolio_risk_route_rejects_invalid_confidence(db_session, test_portfolio):
+    from app.api.portfolios import read_portfolio_risk
+    user_id, portfolio = test_portfolio
+    for invalid in [Decimal("0"), Decimal("1"), Decimal("-0.5"), Decimal("1.2")]:
+        with pytest.raises(HTTPException) as exc_info:
+            read_portfolio_risk(
+                portfolio_id=portfolio.id,
+                var_confidence=invalid,
+                user_id=user_id,
+                db=db_session,
+            )
+        assert exc_info.value.status_code == 422
+
+

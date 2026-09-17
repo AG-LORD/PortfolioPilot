@@ -15,4 +15,7 @@ class RiskAnalyticsRead(BaseModel):
     max_drawdown: Decimal | None
     sharpe_ratio: Decimal | None
     risk_free_rate_annual: Decimal
+    historical_var: Decimal | None
+    historical_cvar: Decimal | None
+    var_confidence: Decimal
     message: str | None
