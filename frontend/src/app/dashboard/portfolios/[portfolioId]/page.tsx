@@ -233,33 +233,15 @@ export default function PortfolioDetailPage() {
               <tr key={a.ticker}>
                 <td>{a.ticker}</td>
                 <td>{a.target_weight}</td>
-      {targetAllocation !== null &&
-        (targetAllocation.allocations.length > 0 || targetAllocation.cash_weight !== undefined) && (
-          <table>
-            <thead>
-              <tr>
-                <th>Ticker</th>
-                <th>Target Weight</th>
               </tr>
             ))}
+            <tr>
+              <td>Cash</td>
+              <td>{targetAllocation.cash_weight}</td>
+            </tr>
           </tbody>
         </table>
       )}
-            </thead>
-            <tbody>
-              {targetAllocation.allocations.map((a) => (
-                <tr key={a.ticker}>
-                  <td>{a.ticker}</td>
-                  <td>{a.target_weight}</td>
-                </tr>
-              ))}
-              <tr>
-                <td>Cash</td>
-                <td>{targetAllocation.cash_weight}</td>
-              </tr>
-            </tbody>
-          </table>
-        )}
 
       <h2>Holdings</h2>
       {holdingsError && <p>{holdingsError}</p>}

@@ -29,9 +29,6 @@ def test_weights_sum_to_one_and_nonnegative():
     result = optimize_target_weights(
         tickers, returns, cov, max_position_weight=Decimal("0.5"), target_volatility=Decimal("1.0")
     )
-    total = sum(w.target_weight for w in result)
-    assert abs(total - Decimal("1")) < Decimal("0.001")
-    assert all(w.target_weight >= 0 for w in result)
     total = sum(w.target_weight for w in result.allocations) + result.cash_weight
     assert total == Decimal("1")
     assert all(w.target_weight >= 0 for w in result.allocations)
@@ -45,11 +42,9 @@ def test_binding_max_position_constraint_enforced():
     result = optimize_target_weights(
         tickers, returns, cov, max_position_weight=Decimal("0.5"), target_volatility=Decimal("1.0")
     )
-    by_ticker = {w.ticker: w.target_weight for w in result}
     by_ticker = {w.ticker: w.target_weight for w in result.allocations}
     # A has the highest return with a generous vol budget -> should hit the cap.
     assert abs(by_ticker["A"] - Decimal("0.5")) < Decimal("0.001")
-    for w in result:
     for w in result.allocations:
         assert w.target_weight <= Decimal("0.5") + Decimal("0.001")
 
@@ -61,7 +56,6 @@ def test_higher_return_asset_gets_more_weight_when_unconstrained_by_position_cap
     result = optimize_target_weights(
         tickers, returns, cov, max_position_weight=Decimal("1.0"), target_volatility=Decimal("1.0")
     )
-    by_ticker = {w.ticker: w.target_weight for w in result}
     by_ticker = {w.ticker: w.target_weight for w in result.allocations}
     assert by_ticker["A"] > by_ticker["B"]
 
@@ -83,7 +77,6 @@ def test_sector_constraint_respected():
         max_sector_weight=Decimal("0.5"),
         sector_map=sector_map,
     )
-    by_ticker = {w.ticker: w.target_weight for w in result}
     by_ticker = {w.ticker: w.target_weight for w in result.allocations}
     assert by_ticker["A"] + by_ticker["B"] <= Decimal("0.5") + Decimal("0.001")
 
@@ -98,7 +91,6 @@ def test_target_volatility_constraint_respected():
     result = optimize_target_weights(
         tickers, returns, cov, max_position_weight=Decimal("1.0"), target_volatility=Decimal("0.15")
     )
-    w = [float(x.target_weight) for x in result]
     w = [float(x.target_weight) for x in result.allocations]
     import math
 
@@ -108,8 +100,9 @@ def test_target_volatility_constraint_respected():
     assert w[0] < 1.0
 
 
-def test_infeasible_max_position_raises():
 def test_three_holdings_with_moderate_position_cap_is_feasible():
+    # 3 assets capped at 0.10 each can sum to at most 0.30 as equities;
+    # cash absorbs the rest instead of the problem being infeasible.
     tickers = ["A", "B", "C"]
     returns = [Decimal("0.15"), Decimal("0.08"), Decimal("0.05")]
     cov = _diag_cov([Decimal("0.04"), Decimal("0.04"), Decimal("0.04")])
@@ -124,15 +117,10 @@ def test_three_holdings_with_moderate_position_cap_is_feasible():
 
 
 def test_fewer_holdings_than_fully_invested_formula_is_feasible():
-    # 2 assets capped at 0.10 each sum to at most 0.20, leaving 0.80 cash
+    # 2 assets capped at 0.10 each sum to at most 0.20, leaving 0.80 cash.
     tickers = ["A", "B"]
     returns = [Decimal("0.10"), Decimal("0.05")]
     cov = _diag_cov([Decimal("0.04"), Decimal("0.04")])
-    # 2 assets capped at 0.1 each can sum to at most 0.2 < 1 -> impossible.
-    with pytest.raises(InfeasibleAllocationError):
-        optimize_target_weights(
-            tickers, returns, cov, max_position_weight=Decimal("0.1"), target_volatility=Decimal("1.0")
-        )
     result = optimize_target_weights(
         tickers, returns, cov, max_position_weight=Decimal("0.10"), target_volatility=Decimal("1.0")
     )
@@ -142,23 +130,22 @@ def test_fewer_holdings_than_fully_invested_formula_is_feasible():
     assert total == Decimal("1")
 
 
-def test_infeasible_target_volatility_raises():
 def test_genuinely_infeasible_constraints_raise():
     tickers = ["A", "B"]
     returns = [Decimal("0.10"), Decimal("0.05")]
-    cov = _diag_cov([Decimal("0.25"), Decimal("0.25")])
     cov = _diag_cov([Decimal("0.04"), Decimal("0.04")])
-    # Negative target volatility cannot be satisfied by any asset or cash (vol >= 0)
+
+    # Negative target volatility cannot be satisfied by any asset or cash (vol >= 0).
     with pytest.raises(InfeasibleAllocationError):
         optimize_target_weights(
             tickers,
             returns,
             cov,
             max_position_weight=Decimal("1.0"),
-            target_volatility=Decimal("0.0001"),
             target_volatility=Decimal("-0.05"),
         )
-    # Zero or negative max_position_weight cannot be satisfied
+
+    # Zero max_position_weight cannot be satisfied.
     with pytest.raises(InfeasibleAllocationError):
         optimize_target_weights(
             tickers,
@@ -179,7 +166,6 @@ def test_deterministic_output_for_same_inputs():
     r2 = optimize_target_weights(
         tickers, returns, cov, max_position_weight=Decimal("0.6"), target_volatility=Decimal("0.5")
     )
-    assert [w.target_weight for w in r1] == [w.target_weight for w in r2]
     assert [w.target_weight for w in r1.allocations] == [w.target_weight for w in r2.allocations]
     assert r1.cash_weight == r2.cash_weight
 
@@ -376,4 +362,3 @@ def test_optimize_route_cash_aware_three_holdings(db_session, test_portfolio):
     for h in holdings:
         db_session.delete(h)
     db_session.commit()
-
