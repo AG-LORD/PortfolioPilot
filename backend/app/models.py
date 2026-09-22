@@ -150,8 +150,11 @@ class Holding(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    portfolio_id: Mapped[UUID] = mapped_column(
+    ForeignKey("portfolios.id"),
+    nullable=False,
+)
 
-    portfolio_id: Mapped[UUID] = mapped_column(nullable=False)
 
     ticker: Mapped[str] = mapped_column(String(20), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(
