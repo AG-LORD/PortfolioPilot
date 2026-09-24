@@ -4,8 +4,11 @@ Recommendation only: nothing here writes to Holding/Transaction/Portfolio.
 optimize_target_weights() is used unchanged; rupee amounts and
 portfolio-level metrics are derived here, outside the optimizer.
 
-Amounts are rounded DOWN to 0.01 so their sum never exceeds capital;
-cash_amount is the exact remainder, so amounts + cash_amount == capital.
+Capital is cash_balance rounded DOWN to 0.01 (cash_balance is stored with 4
+decimals; the sub-paisa remainder, < 0.01, is left unallocated and not
+reported). Amounts are rounded DOWN to 0.01 so their sum never exceeds
+capital; cash_amount is the exact remainder, so amounts + cash_amount ==
+capital, all with 2 decimals.
 """
 
 import math
@@ -41,6 +44,7 @@ class RecommendedAllocation:
 
 @dataclass
 class SizedAllocation:
+    capital: Decimal
     allocations: list[RecommendedAllocation]
     cash_weight: Decimal
     cash_amount: Decimal
@@ -76,6 +80,7 @@ def size_allocation(
     capital: Decimal,
 ) -> SizedAllocation:
     """Zero-weight tickers are omitted from the returned allocations."""
+    capital = capital.quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN)
     w = np.array([float(a.target_weight) for a in target.allocations])
     mu = np.array([float(r) for r in expected_returns])
     sigma = np.array([[float(v) for v in row] for row in covariance])
@@ -96,6 +101,7 @@ def size_allocation(
     cash_amount = capital - sum((a.amount for a in allocations), Decimal("0"))
 
     return SizedAllocation(
+        capital=capital,
         allocations=allocations,
         cash_weight=target.cash_weight,
         cash_amount=cash_amount,
@@ -135,14 +141,15 @@ def get_portfolio_recommendation(
         target_volatility=risk_profile.target_volatility,
     )
 
-    capital = portfolio.cash_balance
-    sized = size_allocation(target, data.inputs.expected_returns, data.inputs.covariance, capital)
+    sized = size_allocation(
+        target, data.inputs.expected_returns, data.inputs.covariance, portfolio.cash_balance
+    )
 
     return Recommendation(
         universe=universe_name,
         universe_as_of=as_of,
         return_model=return_model,
-        capital=capital,
+        capital=sized.capital,
         allocations=sized.allocations,
         cash_weight=sized.cash_weight,
         cash_amount=sized.cash_amount,

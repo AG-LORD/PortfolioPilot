@@ -28,7 +28,8 @@ Works for portfolios with no holdings.
 - Remaining tickers are aligned on common dates (at least 31 overlapping days required).
 - Expected returns are historical mean daily return × 252. Covariance is Ledoit-Wolf, annualized × 252.
 - Weights come from the existing cash-aware optimizer using the risk profile's `max_position_weight` and `target_volatility`.
-- `amount = target_weight × capital`, rounded down to 0.01. `cash_amount` is the exact remainder, so amounts + `cash_amount` = `capital`.
+- `capital` is `cash_balance` rounded down to 0.01. `cash_balance` is stored with 4 decimals, so any sub-paisa remainder (less than ₹0.01) is left unallocated and not reported.
+- `amount = target_weight × capital`, rounded down to 0.01. `cash_amount` is the exact remainder, so amounts + `cash_amount` = `capital`, all with 2 decimals.
 - Prices are read through the daily price cache (`daily_prices`), and only missing dates are fetched from yfinance.
 - Tickers with a zero target weight are omitted from `allocations`.
 
@@ -40,14 +41,14 @@ Works for portfolios with no holdings.
   "universe": "custom",
   "universe_as_of": null,
   "return_model": "historical",
-  "capital": "100000.0000",
+  "capital": "100000.00",
   "allocations": [
     { "ticker": "RELIANCE", "expected_return": "0.197665", "target_weight": "0.1", "amount": "10000.00" },
     { "ticker": "INFY", "expected_return": "0.144422", "target_weight": "0.1", "amount": "10000.00" },
     { "ticker": "HDFCBANK", "expected_return": "0.22987", "target_weight": "0.1", "amount": "10000.00" }
   ],
   "cash_weight": "0.7",
-  "cash_amount": "70000.0000",
+  "cash_amount": "70000.00",
   "expected_portfolio_return": "0.057196",
   "expected_portfolio_volatility": "0.040847",
   "constraints": { "max_position_weight": "0.10", "target_volatility": "0.15" },

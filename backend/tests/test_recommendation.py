@@ -168,10 +168,10 @@ def _sized_example(capital):
 
 
 def test_size_allocation_amounts_sum_exactly_to_capital():
-    capital = Decimal("123456.7891")
-    _, _, _, sized = _sized_example(capital)
+    _, _, _, sized = _sized_example(Decimal("123456.78"))
 
-    assert sum(a.amount for a in sized.allocations) + sized.cash_amount == capital
+    assert sized.capital == Decimal("123456.78")
+    assert sum(a.amount for a in sized.allocations) + sized.cash_amount == sized.capital
     assert sized.cash_amount >= 0
     for a in sized.allocations:
         assert a.amount == a.amount.quantize(Decimal("0.01"))
@@ -179,6 +179,15 @@ def test_size_allocation_amounts_sum_exactly_to_capital():
     assert sum(a.target_weight for a in sized.allocations) + sized.cash_weight == Decimal("1")
     # Negative-return D gets zero weight and is omitted.
     assert "D" not in {a.ticker for a in sized.allocations}
+
+
+def test_size_allocation_rounds_sub_paisa_capital_down_to_two_decimals():
+    _, _, _, sized = _sized_example(Decimal("123456.7891"))
+
+    assert sized.capital == Decimal("123456.78")
+    assert sized.capital.as_tuple().exponent == -2
+    assert sized.cash_amount.as_tuple().exponent == -2
+    assert sum(a.amount for a in sized.allocations) + sized.cash_amount == sized.capital
 
 
 def test_size_allocation_metrics_match_numpy():
@@ -228,6 +237,7 @@ def test_recommendation_for_portfolio_without_holdings(db_session, test_portfoli
     assert response.universe_as_of is None
     assert response.return_model == "historical"
     assert response.capital == portfolio.cash_balance
+    assert response.cash_amount.as_tuple().exponent == -2
     assert len(response.allocations) > 0
     for a in response.allocations:
         assert Decimal("0") < a.target_weight <= max_pos + Decimal("0.001")
