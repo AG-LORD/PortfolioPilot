@@ -1,10 +1,41 @@
+# The test-database guard lives in backend/conftest.py, which pytest loads
+# before this file and before any app import.
 import uuid
 from decimal import Decimal
 
 import pytest
+from price_fakes import TEST_TICKER_PREFIX, FakeMarket
 
 from app.database import SessionLocal
-from app.models import Portfolio, PortfolioSnapshot, RiskProfile, UserProfile
+from app.models import (
+    DailyPrice,
+    Portfolio,
+    PortfolioSnapshot,
+    PriceCacheCoverage,
+    RiskProfile,
+    UserProfile,
+)
+from app.services import market_data
+
+
+def _purge_test_price_cache(session):
+    session.query(DailyPrice).filter(
+        DailyPrice.ticker.startswith(TEST_TICKER_PREFIX, autoescape=True)
+    ).delete(synchronize_session=False)
+    session.query(PriceCacheCoverage).filter(
+        PriceCacheCoverage.ticker.startswith(TEST_TICKER_PREFIX, autoescape=True)
+    ).delete(synchronize_session=False)
+    session.commit()
+
+
+@pytest.fixture
+def fake_market(db_session, monkeypatch):
+    _purge_test_price_cache(db_session)
+    market = FakeMarket()
+    monkeypatch.setattr(market_data, "download_history_batch", market.download)
+    yield market
+    db_session.rollback()
+    _purge_test_price_cache(db_session)
 
 
 @pytest.fixture

@@ -185,46 +185,24 @@ def test_insufficient_history_raises():
         raise InsufficientHistoryError("Only 5 overlapping trading day(s)")
 
 
-def test_get_expected_returns_missing_price_history_propagates(monkeypatch):
-    from app.services import expected_returns as expected_returns_module
+def test_get_expected_returns_missing_price_history_propagates(db_session, fake_market):
+    from app.services.expected_returns import get_expected_returns_and_covariance
     from app.services.market_data import MarketDataUnavailableError
 
-    def fake_get_historical_prices(ticker, start, end):
-        raise MarketDataUnavailableError(ticker, "no historical data returned")
-
-    monkeypatch.setattr(
-        expected_returns_module.market_data, "get_historical_prices", fake_get_historical_prices
-    )
-    with pytest.raises(MarketDataUnavailableError):
-        expected_returns_module.get_expected_returns_and_covariance(["FAKETICKER"])
+    with pytest.raises(MarketDataUnavailableError) as exc_info:
+        get_expected_returns_and_covariance(db_session, ["ZZTEST_FAKETICKER"])
+    assert exc_info.value.reason == "no historical data returned"
 
 
-def test_get_expected_returns_insufficient_overlap_raises(monkeypatch):
-    from datetime import date, timedelta
+def test_get_expected_returns_insufficient_overlap_raises(db_session, fake_market):
+    from price_fakes import make_series
 
-    from app.services import expected_returns as expected_returns_module
-    from app.services.market_data import PricePoint
+    from app.services.expected_returns import get_expected_returns_and_covariance
 
-    def fake_get_historical_prices(ticker, start, end):
-        # Only 5 days of history -> below MIN_HISTORY_OBSERVATIONS.
-        base = date(2026, 1, 1)
-        return [
-            PricePoint(
-                date=base + timedelta(days=i),
-                open=Decimal("100"),
-                high=Decimal("101"),
-                low=Decimal("99"),
-                close=Decimal("100") + i,
-                volume=1000,
-            )
-            for i in range(5)
-        ]
-
-    monkeypatch.setattr(
-        expected_returns_module.market_data, "get_historical_prices", fake_get_historical_prices
-    )
+    # Only 5 days of history -> below MIN_HISTORY_OBSERVATIONS.
+    fake_market.series = {"ZZTEST_A": make_series(1, n_days=5), "ZZTEST_B": make_series(2, n_days=5)}
     with pytest.raises(InsufficientHistoryError):
-        expected_returns_module.get_expected_returns_and_covariance(["A", "B"])
+        get_expected_returns_and_covariance(db_session, ["ZZTEST_A", "ZZTEST_B"])
 
 
 # --- architectural safety: no DB mutation -----------------------------------

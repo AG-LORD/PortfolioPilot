@@ -153,7 +153,7 @@ def get_portfolio_target_allocation(
         raise OptimizationError("Portfolio has no associated risk profile.")
 
     tickers = [h.ticker for h in holdings]
-    inputs: ExpectedReturnsInput = get_expected_returns_and_covariance(tickers)
+    inputs: ExpectedReturnsInput = get_expected_returns_and_covariance(db, tickers)
 
     return optimize_target_weights(
         tickers=inputs.tickers,

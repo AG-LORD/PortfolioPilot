@@ -1,3 +1,4 @@
+from datetime import date as calendar_date
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -6,7 +7,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from decimal import Decimal
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Numeric,
@@ -287,5 +290,55 @@ class PortfolioSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+        nullable=False,
+    )
+
+
+class DailyPrice(Base):
+    """Cached daily OHLCV, adjusted with yfinance auto_adjust=True (splits and
+    dividends; O/H/L/C on the same basis). Prices use unbounded NUMERIC so the
+    Decimal values produced by market_data round-trip exactly."""
+
+    __tablename__ = "daily_prices"
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "date", name="uq_daily_price_ticker_date"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    date: Mapped[calendar_date] = mapped_column(Date, nullable=False)
+    open: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    volume: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class PriceCacheCoverage(Base):
+    """Contiguous inclusive date range per ticker that has been fetched.
+    Dates inside the range without a daily_prices row had no data (weekends,
+    holidays, pre-listing) and are not re-requested."""
+
+    __tablename__ = "price_cache_coverage"
+
+    __table_args__ = (
+        CheckConstraint(
+            "covered_start <= covered_end",
+            name="ck_price_cache_coverage_range",
+        ),
+    )
+
+    ticker: Mapped[str] = mapped_column(String(20), primary_key=True)
+    covered_start: Mapped[calendar_date] = mapped_column(Date, nullable=False)
+    covered_end: Mapped[calendar_date] = mapped_column(Date, nullable=False)
+    last_full_refresh_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
     )

@@ -6,61 +6,31 @@ from uuid import uuid4
 
 import numpy as np
 import pytest
+from price_fakes import make_series
 from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.models import Holding, Portfolio, Transaction
 from app.schemas.recommendation import RecommendationRequest
-from app.services import expected_returns as expected_returns_module
 from app.services import universe as universe_module
 from app.services.expected_returns import (
     MIN_HISTORY_OBSERVATIONS,
     InsufficientHistoryError,
+    _estimate_from_price_series,
     get_expected_returns_and_covariance,
     get_expected_returns_for_universe,
 )
-from app.services.market_data import MarketDataUnavailableError, PricePoint
+from app.services.market_data import MarketDataUnavailableError
 from app.services.optimization import optimize_target_weights
 from app.services.recommendation import size_allocation
 from app.services.universe import UniverseError, get_universe, normalize_tickers
 
 # Placeholder tickers for tests only — NOT the real NIFTY 50 constituents.
-PLACEHOLDER_UNIVERSE = ["AAA", "BBB", "CCC", "DDD", "EEE"]
-
-BASE_DATE = date(2025, 1, 1)
-N_DAYS = 250
-
-
-def _series(seed, n_days=N_DAYS, start=BASE_DATE, drift=0.0008, vol=0.015):
-    rng = np.random.default_rng(seed)
-    daily = rng.normal(drift, vol, n_days - 1)
-    closes = 100 * np.cumprod(np.concatenate([[1.0], 1 + daily]))
-    return [
-        PricePoint(
-            date=start + timedelta(days=i),
-            open=Decimal(str(round(c, 4))),
-            high=Decimal(str(round(c, 4))),
-            low=Decimal(str(round(c, 4))),
-            close=Decimal(str(round(c, 4))),
-            volume=1000,
-        )
-        for i, c in enumerate(closes)
-    ]
-
-
-def _patch_market_data(monkeypatch, series_by_ticker):
-    def fake_get_historical_prices(ticker, start, end):
-        if ticker not in series_by_ticker:
-            raise MarketDataUnavailableError(ticker, "no historical data returned")
-        return series_by_ticker[ticker]
-
-    monkeypatch.setattr(
-        expected_returns_module.market_data, "get_historical_prices", fake_get_historical_prices
-    )
+PLACEHOLDER_UNIVERSE = ["ZZTEST_A", "ZZTEST_B", "ZZTEST_C", "ZZTEST_D", "ZZTEST_E"]
 
 
 def _good_universe_series():
-    return {t: _series(seed=i) for i, t in enumerate(PLACEHOLDER_UNIVERSE)}
+    return {t: make_series(seed=i) for i, t in enumerate(PLACEHOLDER_UNIVERSE)}
 
 
 def _write_universe_file(tmp_path, monkeypatch, tickers, as_of="2026-09-01"):
@@ -113,48 +83,70 @@ def test_get_universe_unconfigured_raises(tmp_path, monkeypatch):
         get_universe("NIFTY50")
 
 
-# --- eligibility filtering ---------------------------------------------------
+# --- eligibility filtering (through the price cache) --------------------------
 
 
-def test_universe_returns_excludes_missing_and_short_history(monkeypatch):
-    series = {"AAA": _series(1), "BBB": _series(2), "SHORT": _series(3, n_days=10)}
-    _patch_market_data(monkeypatch, series)
+def test_universe_returns_excludes_missing_and_short_history(db_session, fake_market):
+    fake_market.series = {
+        "ZZTEST_A": make_series(1),
+        "ZZTEST_B": make_series(2),
+        "ZZTEST_SHORT": make_series(3, n_days=10),
+    }
 
-    result = get_expected_returns_for_universe(["AAA", "MISSING", "BBB", "SHORT"])
+    result = get_expected_returns_for_universe(
+        db_session, ["ZZTEST_A", "ZZTEST_MISSING", "ZZTEST_B", "ZZTEST_SHORT"]
+    )
 
-    assert result.inputs.tickers == ["AAA", "BBB"]
+    assert result.inputs.tickers == ["ZZTEST_A", "ZZTEST_B"]
     assert len(result.inputs.expected_returns) == 2
     assert len(result.inputs.covariance) == 2
     reasons = {e.ticker: e.reason for e in result.excluded}
-    assert set(reasons) == {"MISSING", "SHORT"}
-    assert "no historical data" in reasons["MISSING"]
-    assert "10 trading day" in reasons["SHORT"]
+    assert reasons == {
+        "ZZTEST_MISSING": "no historical data returned",
+        "ZZTEST_SHORT": "only 10 trading day(s) of history; at least 31 are needed",
+    }
 
 
-def test_universe_returns_all_ineligible_raises(monkeypatch):
-    _patch_market_data(monkeypatch, {"SHORT": _series(1, n_days=5)})
+def test_universe_returns_batch_failure_excludes_with_request_failed_reason(db_session, fake_market):
+    fake_market.fail = MarketDataUnavailableError("ZZTEST_A, ZZTEST_B", "history request failed: boom")
     with pytest.raises(InsufficientHistoryError):
-        get_expected_returns_for_universe(["MISSING", "SHORT"])
+        get_expected_returns_for_universe(db_session, ["ZZTEST_A", "ZZTEST_B"])
 
 
-def test_universe_returns_insufficient_common_dates_raises(monkeypatch):
+def test_universe_returns_all_ineligible_raises(db_session, fake_market):
+    fake_market.series = {"ZZTEST_SHORT": make_series(1, n_days=5)}
+    with pytest.raises(InsufficientHistoryError):
+        get_expected_returns_for_universe(db_session, ["ZZTEST_MISSING", "ZZTEST_SHORT"])
+
+
+def test_universe_returns_insufficient_common_dates_raises(db_session, fake_market):
     # Each ticker alone has enough history, but their overlap is too short.
     n = MIN_HISTORY_OBSERVATIONS + 10
-    series = {
-        "AAA": _series(1, n_days=n, start=BASE_DATE),
-        "BBB": _series(2, n_days=n, start=BASE_DATE + timedelta(days=n - 15)),
+    end = date.today() - timedelta(days=2)
+    fake_market.series = {
+        "ZZTEST_A": make_series(1, n_days=n, end=end),
+        "ZZTEST_B": make_series(2, n_days=n, end=end - timedelta(days=n - 15)),
     }
-    _patch_market_data(monkeypatch, series)
     with pytest.raises(InsufficientHistoryError):
-        get_expected_returns_for_universe(["AAA", "BBB"])
+        get_expected_returns_for_universe(db_session, ["ZZTEST_A", "ZZTEST_B"])
 
 
-def test_universe_returns_matches_existing_estimator_when_all_eligible(monkeypatch):
-    _patch_market_data(monkeypatch, _good_universe_series())
-    new = get_expected_returns_for_universe(PLACEHOLDER_UNIVERSE)
-    old = get_expected_returns_and_covariance(PLACEHOLDER_UNIVERSE)
-    assert new.excluded == []
-    assert new.inputs == old
+def test_expected_returns_identical_with_and_without_cache(db_session, fake_market):
+    series = _good_universe_series()
+    fake_market.series = series
+    without_cache = _estimate_from_price_series(PLACEHOLDER_UNIVERSE, series)
+
+    cold = get_expected_returns_for_universe(db_session, PLACEHOLDER_UNIVERSE)
+    calls_after_cold = len(fake_market.calls)
+    warm = get_expected_returns_for_universe(db_session, PLACEHOLDER_UNIVERSE)
+    holdings_path = get_expected_returns_and_covariance(db_session, PLACEHOLDER_UNIVERSE)
+
+    assert calls_after_cold == 1
+    assert len(fake_market.calls) == 1
+    assert cold.excluded == [] and warm.excluded == []
+    assert cold.inputs == without_cache
+    assert warm.inputs == without_cache
+    assert holdings_path == without_cache
 
 
 # --- sizing: amounts and portfolio metrics ------------------------------------
@@ -177,7 +169,7 @@ def _sized_example(capital):
 
 def test_size_allocation_amounts_sum_exactly_to_capital():
     capital = Decimal("123456.7891")
-    target, _, _, sized = _sized_example(capital)
+    _, _, _, sized = _sized_example(capital)
 
     assert sum(a.amount for a in sized.allocations) + sized.cash_amount == capital
     assert sized.cash_amount >= 0
@@ -217,16 +209,16 @@ def test_request_requires_exactly_one_source():
 # --- API route (DB-backed) --------------------------------------------------------
 
 
-def test_recommendation_for_portfolio_without_holdings(db_session, test_portfolio, monkeypatch):
+def test_recommendation_for_portfolio_without_holdings(db_session, test_portfolio, fake_market):
     from app.api.portfolios import create_portfolio_recommendation
 
     user_id, portfolio = test_portfolio
     assert db_session.query(Holding).filter(Holding.portfolio_id == portfolio.id).count() == 0
-    _patch_market_data(monkeypatch, _good_universe_series())
+    fake_market.series = _good_universe_series()
 
     response = create_portfolio_recommendation(
         portfolio_id=portfolio.id,
-        data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE + ["MISSING"]),
+        data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE + ["ZZTEST_MISSING"]),
         user_id=user_id,
         db=db_session,
     )
@@ -242,15 +234,15 @@ def test_recommendation_for_portfolio_without_holdings(db_session, test_portfoli
     assert sum(a.target_weight for a in response.allocations) + response.cash_weight == Decimal("1")
     assert sum(a.amount for a in response.allocations) + response.cash_amount == response.capital
     assert response.expected_portfolio_volatility <= response.constraints.target_volatility + Decimal("0.001")
-    assert [e.ticker for e in response.excluded] == ["MISSING"]
+    assert [e.ticker for e in response.excluded] == ["ZZTEST_MISSING"]
 
 
-def test_recommendation_route_named_universe(db_session, test_portfolio, monkeypatch, tmp_path):
+def test_recommendation_route_named_universe(db_session, test_portfolio, fake_market, monkeypatch, tmp_path):
     from app.api.portfolios import create_portfolio_recommendation
 
     user_id, portfolio = test_portfolio
     _write_universe_file(tmp_path, monkeypatch, PLACEHOLDER_UNIVERSE)
-    _patch_market_data(monkeypatch, _good_universe_series())
+    fake_market.series = _good_universe_series()
 
     response = create_portfolio_recommendation(
         portfolio_id=portfolio.id,
@@ -263,15 +255,14 @@ def test_recommendation_route_named_universe(db_session, test_portfolio, monkeyp
     assert response.excluded == []
 
 
-def test_recommendation_route_all_ineligible_returns_422(db_session, test_portfolio, monkeypatch):
+def test_recommendation_route_all_ineligible_returns_422(db_session, test_portfolio, fake_market):
     from app.api.portfolios import create_portfolio_recommendation
 
     user_id, portfolio = test_portfolio
-    _patch_market_data(monkeypatch, {})
     with pytest.raises(HTTPException) as exc_info:
         create_portfolio_recommendation(
             portfolio_id=portfolio.id,
-            data=RecommendationRequest(tickers=["MISSING1", "MISSING2"]),
+            data=RecommendationRequest(tickers=["ZZTEST_MISSING1", "ZZTEST_MISSING2"]),
             user_id=user_id,
             db=db_session,
         )
@@ -299,19 +290,19 @@ def test_recommendation_route_unauthorized_returns_404(db_session, test_portfoli
     with pytest.raises(HTTPException) as exc_info:
         create_portfolio_recommendation(
             portfolio_id=portfolio.id,
-            data=RecommendationRequest(tickers=["AAA"]),
+            data=RecommendationRequest(tickers=["ZZTEST_A"]),
             user_id=uuid4(),
             db=db_session,
         )
     assert exc_info.value.status_code == 404
 
 
-def test_recommendation_does_not_mutate_portfolio_state(db_session, test_portfolio, monkeypatch):
+def test_recommendation_does_not_mutate_portfolio_state(db_session, test_portfolio, fake_market):
     from app.api.portfolios import create_portfolio_recommendation
 
     user_id, portfolio = test_portfolio
     holding = Holding(
-        portfolio_id=portfolio.id, ticker="AAA", quantity=Decimal("10"), average_cost=Decimal("100")
+        portfolio_id=portfolio.id, ticker="ZZTEST_A", quantity=Decimal("10"), average_cost=Decimal("100")
     )
     db_session.add(holding)
     db_session.commit()
@@ -320,7 +311,7 @@ def test_recommendation_does_not_mutate_portfolio_state(db_session, test_portfol
     before_holdings = db_session.query(Holding).filter(Holding.portfolio_id == portfolio.id).count()
     before_txns = db_session.query(Transaction).filter(Transaction.portfolio_id == portfolio.id).count()
 
-    _patch_market_data(monkeypatch, _good_universe_series())
+    fake_market.series = _good_universe_series()
     create_portfolio_recommendation(
         portfolio_id=portfolio.id,
         data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE),

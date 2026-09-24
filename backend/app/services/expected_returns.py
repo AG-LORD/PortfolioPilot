@@ -1,6 +1,7 @@
 """Historical expected-return/covariance inputs for portfolio optimization.
 
-Uses market_data's canonical adjusted-price history. Annualized with the
+Uses market_data's canonical adjusted-price history, read through the
+price_history cache. Annualized with the
 same ANNUALIZATION_FACTOR (252) convention used elsewhere in risk analytics.
 Ledoit-Wolf shrinkage (sklearn) is used for the covariance estimate, a
 standard, more stable alternative to a raw sample covariance on limited
@@ -13,8 +14,9 @@ from decimal import Decimal
 
 import numpy as np
 from sklearn.covariance import LedoitWolf
+from sqlalchemy.orm import Session
 
-from app.services import market_data
+from app.services import market_data, price_history
 from app.services.risk_analytics import ANNUALIZATION_FACTOR
 
 LOOKBACK_DAYS = 365
@@ -95,37 +97,39 @@ def _estimate_from_price_series(
     return ExpectedReturnsInput(tickers=tickers, expected_returns=expected_returns, covariance=covariance)
 
 
-def get_expected_returns_and_covariance(tickers: list[str]) -> ExpectedReturnsInput:
+def get_expected_returns_and_covariance(db: Session, tickers: list[str]) -> ExpectedReturnsInput:
     if not tickers:
         raise InsufficientHistoryError("No tickers provided for optimization.")
 
     start, end = _history_window()
+    history = price_history.get_price_history(db, tickers, start, end)
 
-    # market_data raises MarketDataUnavailableError per-ticker if a symbol
-    # has no data — let it propagate (same fail-entirely policy as
-    # valuation's price fetch).
-    price_series = {
-        ticker: market_data.get_historical_prices(ticker, start, end) for ticker in tickers
-    }
+    # A ticker with no data fails the whole request (same fail-entirely
+    # policy as valuation's price fetch).
+    for ticker in tickers:
+        if ticker in history.errors:
+            raise history.errors[ticker]
+
+    price_series = {ticker: history.points[ticker] for ticker in tickers}
     return _estimate_from_price_series(tickers, price_series)
 
 
-def get_expected_returns_for_universe(tickers: list[str]) -> UniverseReturnsInput:
+def get_expected_returns_for_universe(db: Session, tickers: list[str]) -> UniverseReturnsInput:
     """Like get_expected_returns_and_covariance, but excludes (with a reason)
     tickers with no data or too little history instead of failing outright."""
     if not tickers:
         raise InsufficientHistoryError("No tickers provided for recommendation.")
 
     start, end = _history_window()
+    history = price_history.get_price_history(db, tickers, start, end)
     price_series: dict[str, list[market_data.PricePoint]] = {}
     excluded: list[ExcludedTicker] = []
 
     for ticker in tickers:
-        try:
-            points = market_data.get_historical_prices(ticker, start, end)
-        except market_data.MarketDataUnavailableError as exc:
-            excluded.append(ExcludedTicker(ticker=ticker, reason=exc.reason))
+        if ticker in history.errors:
+            excluded.append(ExcludedTicker(ticker=ticker, reason=history.errors[ticker].reason))
             continue
+        points = history.points[ticker]
         if len(points) < MIN_HISTORY_OBSERVATIONS + 1:
             excluded.append(
                 ExcludedTicker(

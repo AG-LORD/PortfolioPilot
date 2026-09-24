@@ -29,6 +29,7 @@ Works for portfolios with no holdings.
 - Expected returns are historical mean daily return × 252. Covariance is Ledoit-Wolf, annualized × 252.
 - Weights come from the existing cash-aware optimizer using the risk profile's `max_position_weight` and `target_volatility`.
 - `amount = target_weight × capital`, rounded down to 0.01. `cash_amount` is the exact remainder, so amounts + `cash_amount` = `capital`.
+- Prices are read through the daily price cache (`daily_prices`), and only missing dates are fetched from yfinance.
 - Tickers with a zero target weight are omitted from `allocations`.
 
 **Response 200**

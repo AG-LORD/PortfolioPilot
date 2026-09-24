@@ -126,7 +126,7 @@ def get_portfolio_recommendation(
     else:
         universe_name, as_of, candidates = CUSTOM_UNIVERSE, None, normalize_tickers(tickers or [])
 
-    data = get_expected_returns_for_universe(candidates)
+    data = get_expected_returns_for_universe(db, candidates)
     target = optimize_target_weights(
         tickers=data.inputs.tickers,
         expected_returns=data.inputs.expected_returns,

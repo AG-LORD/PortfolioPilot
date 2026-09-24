@@ -75,6 +75,10 @@ def get_historical_prices(ticker: str, start: date, end: date) -> list[PricePoin
     if history.empty:
         raise MarketDataUnavailableError(ticker, "no historical data returned")
 
+    return _frame_to_points(history)
+
+
+def _frame_to_points(frame) -> list[PricePoint]:
     return [
         PricePoint(
             date=index.date(),
@@ -84,5 +88,48 @@ def get_historical_prices(ticker: str, start: date, end: date) -> list[PricePoin
             close=Decimal(str(row["Close"])),
             volume=int(row["Volume"]),
         )
-        for index, row in history.iterrows()
+        for index, row in frame.iterrows()
     ]
+
+
+def download_history_batch(
+    tickers: list[str], start: date, end: date
+) -> dict[str, list[PricePoint]]:
+    """Adjusted OHLC history for several tickers in one request (same
+    auto_adjust=True convention as get_historical_prices; `end` exclusive).
+    A ticker with no data maps to an empty list; only a failure of the whole
+    request raises."""
+    symbols = {ticker: _to_yfinance_symbol(ticker) for ticker in tickers}
+
+    try:
+        frame = yf.download(
+            list(symbols.values()),
+            start=start,
+            end=end,
+            auto_adjust=True,
+            group_by="ticker",
+            progress=False,
+            threads=True,
+        )
+    except Exception as exc:
+        raise MarketDataUnavailableError(
+            ", ".join(tickers), f"history request failed: {exc}"
+        ) from exc
+
+    result: dict[str, list[PricePoint]] = {}
+    for ticker, symbol in symbols.items():
+        if frame is None or frame.empty:
+            result[ticker] = []
+            continue
+        if frame.columns.nlevels > 1:
+            if symbol not in frame.columns.get_level_values(0):
+                result[ticker] = []
+                continue
+            ticker_frame = frame[symbol]
+        else:
+            ticker_frame = frame
+        # A combined frame has the union of all tickers' dates; rows where
+        # this ticker has no bar are NaN and are not real data.
+        ticker_frame = ticker_frame.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+        result[ticker] = _frame_to_points(ticker_frame)
+    return result
