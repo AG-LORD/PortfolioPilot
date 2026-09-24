@@ -86,6 +86,7 @@ def test_get_universe_unconfigured_raises(tmp_path, monkeypatch):
 # --- eligibility filtering (through the price cache) --------------------------
 
 
+@pytest.mark.db
 def test_universe_returns_excludes_missing_and_short_history(db_session, fake_market):
     fake_market.series = {
         "ZZTEST_A": make_series(1),
@@ -107,18 +108,21 @@ def test_universe_returns_excludes_missing_and_short_history(db_session, fake_ma
     }
 
 
+@pytest.mark.db
 def test_universe_returns_batch_failure_excludes_with_request_failed_reason(db_session, fake_market):
     fake_market.fail = MarketDataUnavailableError("ZZTEST_A, ZZTEST_B", "history request failed: boom")
     with pytest.raises(InsufficientHistoryError):
         get_expected_returns_for_universe(db_session, ["ZZTEST_A", "ZZTEST_B"])
 
 
+@pytest.mark.db
 def test_universe_returns_all_ineligible_raises(db_session, fake_market):
     fake_market.series = {"ZZTEST_SHORT": make_series(1, n_days=5)}
     with pytest.raises(InsufficientHistoryError):
         get_expected_returns_for_universe(db_session, ["ZZTEST_MISSING", "ZZTEST_SHORT"])
 
 
+@pytest.mark.db
 def test_universe_returns_insufficient_common_dates_raises(db_session, fake_market):
     # Each ticker alone has enough history, but their overlap is too short.
     n = MIN_HISTORY_OBSERVATIONS + 10
@@ -131,6 +135,7 @@ def test_universe_returns_insufficient_common_dates_raises(db_session, fake_mark
         get_expected_returns_for_universe(db_session, ["ZZTEST_A", "ZZTEST_B"])
 
 
+@pytest.mark.db
 def test_expected_returns_identical_with_and_without_cache(db_session, fake_market):
     series = _good_universe_series()
     fake_market.series = series
@@ -218,6 +223,7 @@ def test_request_requires_exactly_one_source():
 # --- API route (DB-backed) --------------------------------------------------------
 
 
+@pytest.mark.db
 def test_recommendation_for_portfolio_without_holdings(db_session, test_portfolio, fake_market):
     from app.api.portfolios import create_portfolio_recommendation
 
@@ -247,6 +253,7 @@ def test_recommendation_for_portfolio_without_holdings(db_session, test_portfoli
     assert [e.ticker for e in response.excluded] == ["ZZTEST_MISSING"]
 
 
+@pytest.mark.db
 def test_recommendation_route_named_universe(db_session, test_portfolio, fake_market, monkeypatch, tmp_path):
     from app.api.portfolios import create_portfolio_recommendation
 
@@ -265,6 +272,7 @@ def test_recommendation_route_named_universe(db_session, test_portfolio, fake_ma
     assert response.excluded == []
 
 
+@pytest.mark.db
 def test_recommendation_route_all_ineligible_returns_422(db_session, test_portfolio, fake_market):
     from app.api.portfolios import create_portfolio_recommendation
 
@@ -279,6 +287,7 @@ def test_recommendation_route_all_ineligible_returns_422(db_session, test_portfo
     assert exc_info.value.status_code == 422
 
 
+@pytest.mark.db
 def test_recommendation_route_unknown_universe_returns_422(db_session, test_portfolio):
     from app.api.portfolios import create_portfolio_recommendation
 
@@ -293,6 +302,7 @@ def test_recommendation_route_unknown_universe_returns_422(db_session, test_port
     assert exc_info.value.status_code == 422
 
 
+@pytest.mark.db
 def test_recommendation_route_unauthorized_returns_404(db_session, test_portfolio):
     from app.api.portfolios import create_portfolio_recommendation
 
@@ -307,6 +317,7 @@ def test_recommendation_route_unauthorized_returns_404(db_session, test_portfoli
     assert exc_info.value.status_code == 404
 
 
+@pytest.mark.db
 def test_recommendation_does_not_mutate_portfolio_state(db_session, test_portfolio, fake_market):
     from app.api.portfolios import create_portfolio_recommendation
 

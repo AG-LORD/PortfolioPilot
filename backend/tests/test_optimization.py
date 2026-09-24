@@ -185,6 +185,7 @@ def test_insufficient_history_raises():
         raise InsufficientHistoryError("Only 5 overlapping trading day(s)")
 
 
+@pytest.mark.db
 def test_get_expected_returns_missing_price_history_propagates(db_session, fake_market):
     from app.services.expected_returns import get_expected_returns_and_covariance
     from app.services.market_data import MarketDataUnavailableError
@@ -194,6 +195,7 @@ def test_get_expected_returns_missing_price_history_propagates(db_session, fake_
     assert exc_info.value.reason == "no historical data returned"
 
 
+@pytest.mark.db
 def test_get_expected_returns_insufficient_overlap_raises(db_session, fake_market):
     from price_fakes import make_series
 
@@ -218,6 +220,7 @@ def _make_risk_profile_permissive(db_session, portfolio):
     db_session.commit()
 
 
+@pytest.mark.db
 def test_optimization_does_not_modify_holding_or_cash_balance(db_session, test_portfolio):
     user_id, portfolio = test_portfolio
     _make_risk_profile_permissive(db_session, portfolio)
@@ -256,6 +259,7 @@ def test_optimization_does_not_modify_holding_or_cash_balance(db_session, test_p
 # --- API: ownership, success, clean failure ---------------------------------
 
 
+@pytest.mark.db
 def test_optimize_route_no_holdings_returns_422(db_session, test_portfolio):
     from app.api.portfolios import read_portfolio_target_allocation
 
@@ -265,6 +269,7 @@ def test_optimize_route_no_holdings_returns_422(db_session, test_portfolio):
     assert exc_info.value.status_code == 422
 
 
+@pytest.mark.db
 def test_optimize_route_unauthorized_returns_404(db_session, test_portfolio):
     from app.api.portfolios import read_portfolio_target_allocation
 
@@ -274,6 +279,7 @@ def test_optimize_route_unauthorized_returns_404(db_session, test_portfolio):
     assert exc_info.value.status_code == 404
 
 
+@pytest.mark.db
 def test_optimize_route_success(db_session, test_portfolio):
     from app.api.portfolios import read_portfolio_target_allocation
 
@@ -305,6 +311,7 @@ def test_optimize_route_success(db_session, test_portfolio):
     db_session.commit()
 
 
+@pytest.mark.db
 def test_optimize_route_cash_aware_three_holdings(db_session, test_portfolio):
     from app.api.portfolios import read_portfolio_target_allocation
 

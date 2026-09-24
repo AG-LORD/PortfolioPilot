@@ -38,6 +38,7 @@ def _set_clock(monkeypatch, moment: datetime):
     monkeypatch.setattr(price_history, "_now", lambda: moment)
 
 
+@pytest.mark.db
 def test_cache_miss_fetches_and_stores_then_second_call_makes_no_download(db_session, fake_market):
     series = _weekday_series()
     fake_market.series = {A: series}
@@ -52,6 +53,7 @@ def test_cache_miss_fetches_and_stores_then_second_call_makes_no_download(db_ses
     assert second.points[A] == first.points[A]
 
 
+@pytest.mark.db
 def test_partial_coverage_fetches_only_missing_right_edge(db_session, fake_market):
     series = _weekday_series()
     fake_market.series = {A: series}
@@ -67,6 +69,7 @@ def test_partial_coverage_fetches_only_missing_right_edge(db_session, fake_marke
     assert _row_count(db_session, A) == len(_in_range(series, JAN1, MAR1))
 
 
+@pytest.mark.db
 def test_partial_coverage_fetches_only_missing_left_edge(db_session, fake_market):
     series = _weekday_series()
     fake_market.series = {A: series}
@@ -80,6 +83,7 @@ def test_partial_coverage_fetches_only_missing_left_edge(db_session, fake_market
     assert result.points[A] == _in_range(series, JAN1, MAR1)
 
 
+@pytest.mark.db
 def test_request_inside_coverage_makes_no_download_even_with_empty_dates(db_session, fake_market):
     fake_market.series = {A: _weekday_series()}
     get_price_history(db_session, [A], JAN1, MAR1)
@@ -92,6 +96,7 @@ def test_request_inside_coverage_makes_no_download_even_with_empty_dates(db_sess
     assert len(inner.points[A]) > 0
 
 
+@pytest.mark.db
 def test_pre_listing_range_is_not_requested_again(db_session, fake_market):
     series = make_series(1, n_days=40, end=date(2026, 2, 20))  # "lists" mid-January
     fake_market.series = {A: series}
@@ -103,6 +108,7 @@ def test_pre_listing_range_is_not_requested_again(db_session, fake_market):
     assert coverage.covered_start == JAN1
 
 
+@pytest.mark.db
 def test_missing_tickers_fetched_in_single_batched_call(db_session, fake_market):
     fake_market.series = {A: _weekday_series(1), B: _weekday_series(2), C: _weekday_series(3)}
 
@@ -113,6 +119,7 @@ def test_missing_tickers_fetched_in_single_batched_call(db_session, fake_market)
     assert all(len(result.points[t]) > 0 for t in (A, B, C))
 
 
+@pytest.mark.db
 def test_upsert_never_duplicates_rows(db_session, fake_market):
     series = _weekday_series()
     fake_market.series = {A: series}
@@ -128,6 +135,7 @@ def test_upsert_never_duplicates_rows(db_session, fake_market):
     assert _row_count(db_session, A) == expected
 
 
+@pytest.mark.db
 def test_today_not_stored_before_close_buffer_and_stored_after(db_session, fake_market, monkeypatch):
     today = date(2026, 3, 10)  # a Tuesday
     fake_market.series = {A: make_series(1, n_days=30, end=today)}
@@ -146,6 +154,7 @@ def test_today_not_stored_before_close_buffer_and_stored_after(db_session, fake_
     assert db_session.get(PriceCacheCoverage, A).covered_end == today
 
 
+@pytest.mark.db
 def test_stale_coverage_triggers_full_refresh(db_session, fake_market):
     fake_market.series = {A: _weekday_series()}
     get_price_history(db_session, [A], JAN1, MAR1)
@@ -164,6 +173,7 @@ def test_stale_coverage_triggers_full_refresh(db_session, fake_market):
     assert datetime.now(MARKET_TIMEZONE) - refreshed < timedelta(minutes=5)
 
 
+@pytest.mark.db
 def test_force_refresh_triggers_full_refresh(db_session, fake_market):
     fake_market.series = {A: _weekday_series()}
     get_price_history(db_session, [A], JAN1, MAR1)
@@ -181,6 +191,7 @@ def _rebased(series, factor):
     ]
 
 
+@pytest.mark.db
 def test_seam_mismatch_triggers_full_refresh_and_replaces_rows(db_session, fake_market):
     series = _weekday_series()
     fake_market.series = {A: series}
@@ -197,6 +208,7 @@ def test_seam_mismatch_triggers_full_refresh_and_replaces_rows(db_session, fake_
     assert _row_count(db_session, A) == len(_in_range(rebased, JAN1, MAR1))
 
 
+@pytest.mark.db
 def test_seam_within_tolerance_stays_incremental(db_session, fake_market):
     series = _weekday_series()
     fake_market.series = {A: series}
@@ -210,6 +222,7 @@ def test_seam_within_tolerance_stays_incremental(db_session, fake_market):
     assert result.points[A][: len(_in_range(series, JAN1, FEB1))] == _in_range(series, JAN1, FEB1)
 
 
+@pytest.mark.db
 def test_batch_failure_reports_request_failed_reason(db_session, fake_market):
     fake_market.fail = MarketDataUnavailableError(f"{A}, {B}", "history request failed: boom")
 

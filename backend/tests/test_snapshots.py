@@ -32,6 +32,7 @@ from app.services.valuation import get_portfolio_valuation
 
 
 @patch("app.services.market_data.get_current_price")
+@pytest.mark.db
 def test_snapshot_creation_first_snapshot_has_no_daily_return(mock_price, db_session, test_portfolio):
     user_id, portfolio = test_portfolio
     mock_price.return_value = Decimal("100")
@@ -44,6 +45,7 @@ def test_snapshot_creation_first_snapshot_has_no_daily_return(mock_price, db_ses
 
 
 @patch("app.services.market_data.get_current_price")
+@pytest.mark.db
 def test_duplicate_snapshot_same_day_rejected(mock_price, db_session, test_portfolio):
     user_id, portfolio = test_portfolio
     mock_price.return_value = Decimal("100")
@@ -56,6 +58,7 @@ def test_duplicate_snapshot_same_day_rejected(mock_price, db_session, test_portf
     assert exc_info.value.status_code == 409
 
 
+@pytest.mark.db
 def test_valuation_unauthorized_access_raises_404(db_session, test_portfolio):
     _, portfolio = test_portfolio
 
@@ -65,6 +68,7 @@ def test_valuation_unauthorized_access_raises_404(db_session, test_portfolio):
     assert exc_info.value.status_code == 404
 
 
+@pytest.mark.db
 def test_snapshot_unauthorized_access_raises_404(db_session, test_portfolio):
     _, portfolio = test_portfolio
 
@@ -75,6 +79,7 @@ def test_snapshot_unauthorized_access_raises_404(db_session, test_portfolio):
 
 
 @patch("app.services.market_data.get_current_price")
+@pytest.mark.db
 def test_valuation_fails_entirely_if_any_ticker_unpriced(mock_price, db_session, test_portfolio):
     user_id, portfolio = test_portfolio
 

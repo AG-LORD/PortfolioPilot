@@ -226,6 +226,7 @@ def test_risk_analytics_excludes_zero_previous_value_from_observation_count():
 # --- ownership (integration, reuses test_portfolio fixture from conftest) --
 
 
+@pytest.mark.db
 def test_risk_analytics_unauthorized_access_raises_404(db_session, test_portfolio):
     _, portfolio = test_portfolio
     with pytest.raises(HTTPException) as exc_info:
@@ -338,6 +339,7 @@ def test_risk_analytics_zero_snapshots_has_none_var_cvar():
     assert result.message == "No snapshot history exists for this portfolio yet."
 
 
+@pytest.mark.db
 def test_get_portfolio_risk_analytics_passes_through_var_confidence(db_session, test_portfolio):
     user_id, portfolio = test_portfolio
     result = get_portfolio_risk_analytics(
@@ -351,6 +353,7 @@ def test_get_portfolio_risk_analytics_passes_through_var_confidence(db_session, 
     assert result.historical_cvar is None
 
 
+@pytest.mark.db
 def test_get_portfolio_risk_analytics_propagates_confidence_through_real_history(
     db_session, test_portfolio
 ):
@@ -397,6 +400,7 @@ def test_get_portfolio_risk_analytics_propagates_confidence_through_real_history
     assert result_90.historical_var != result_95.historical_var
 
 
+@pytest.mark.db
 def test_read_portfolio_risk_route_with_custom_confidence(db_session, test_portfolio):
     from app.api.portfolios import read_portfolio_risk
     user_id, portfolio = test_portfolio
@@ -411,6 +415,7 @@ def test_read_portfolio_risk_route_with_custom_confidence(db_session, test_portf
     assert response.historical_cvar is None
 
 
+@pytest.mark.db
 def test_read_portfolio_risk_route_rejects_invalid_confidence(db_session, test_portfolio):
     from app.api.portfolios import read_portfolio_risk
     user_id, portfolio = test_portfolio
