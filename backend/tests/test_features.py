@@ -11,10 +11,13 @@ from app.services.features import (
     DEFAULT_HORIZON,
     FEATURE_COLUMNS,
     LABEL_COLUMN,
+    MIN_FEATURE_HISTORY,
     MIN_HISTORY_ROWS,
+    MIN_PANEL_ROWS,
     WARMUP_ROWS,
     atr,
     build_feature_panel,
+    build_panel_from_prices,
     compute_features,
     forward_return,
     macd,
@@ -206,13 +209,56 @@ def test_build_feature_panel_excludes_short_history_and_aligns_label(db_session,
 
     reasons = {e.ticker: e.reason for e in result.excluded}
     assert reasons == {
-        "ZZTEST_SHORT": f"only 40 trading day(s) of history; at least {MIN_HISTORY_ROWS} are needed",
+        "ZZTEST_SHORT": f"only 40 trading day(s) of history; at least {MIN_PANEL_ROWS} are needed",
         "ZZTEST_MISSING": "no historical data returned",
     }
     panel = result.panel
     assert list(panel.columns) == ["date", "ticker", *FEATURE_COLUMNS, LABEL_COLUMN, BASELINE_COLUMN]
     assert set(panel["ticker"]) == {"ZZTEST_LONG"}
-    assert len(panel) == n - WARMUP_ROWS
+    assert len(panel) == n - MIN_FEATURE_HISTORY
     assert panel[LABEL_COLUMN].isna().sum() == DEFAULT_HORIZON
-    assert panel[BASELINE_COLUMN].notna().sum() == n - BASELINE_LOOKBACK
+    assert panel[BASELINE_COLUMN].notna().all()
     assert not panel[FEATURE_COLUMNS].isna().any().any()
+
+
+# --- panel minimum history (no DB) ----------------------------------------------
+
+
+def _points(n, seed=1):
+    return make_series(seed, n_days=n, end=date(2025, 12, 31))
+
+
+def test_min_feature_history_matches_baseline_and_covers_warm_up():
+    assert MIN_FEATURE_HISTORY == BASELINE_LOOKBACK == 252
+    assert MIN_FEATURE_HISTORY >= WARMUP_ROWS
+
+
+def test_panel_rows_have_min_feature_history_before_their_date():
+    points = _points(300)
+    panel = build_panel_from_prices(["ZZTEST_A"], {"ZZTEST_A": points}, errors={}).panel
+
+    all_dates = [p.date for p in points]
+    assert panel["date"].iloc[0] == all_dates[MIN_FEATURE_HISTORY]
+    assert len(panel) == 300 - MIN_FEATURE_HISTORY
+    for day in panel["date"]:
+        assert all_dates.index(day) >= MIN_FEATURE_HISTORY
+    assert panel[BASELINE_COLUMN].notna().all()
+
+
+def test_panel_excludes_tickers_below_min_feature_history_with_reasons():
+    result = build_panel_from_prices(
+        ["ZZTEST_JUST", "ZZTEST_SHORT", "ZZTEST_EMPTY", "ZZTEST_FAILED"],
+        {
+            "ZZTEST_JUST": _points(MIN_PANEL_ROWS),
+            "ZZTEST_SHORT": _points(MIN_PANEL_ROWS - 1),
+            "ZZTEST_EMPTY": [],
+        },
+        errors={"ZZTEST_FAILED": "history request failed: boom"},
+    )
+    assert {e.ticker: e.reason for e in result.excluded} == {
+        "ZZTEST_SHORT": f"only {MIN_PANEL_ROWS - 1} trading day(s) of history; at least {MIN_PANEL_ROWS} are needed",
+        "ZZTEST_EMPTY": "no historical data returned",
+        "ZZTEST_FAILED": "history request failed: boom",
+    }
+    assert set(result.panel["ticker"]) == {"ZZTEST_JUST"}
+    assert len(result.panel) == 1

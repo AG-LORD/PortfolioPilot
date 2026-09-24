@@ -13,6 +13,11 @@ all prices by a constant leaves it unchanged; one model can serve all stocks.
 Recursive smoothers (EMA for MACD, Wilder for RSI/ATR) start at the first row
 of the series they are given, so a value also depends (with exponentially
 decaying weight) on where the series starts; they never depend on later rows.
+Panel rows (forecasting and evaluation) therefore require MIN_FEATURE_HISTORY
+trading days of prior history, which makes that dependence negligible.
+
+This module does not import the database layer; only build_feature_panel
+touches the price cache.
 """
 
 import math
@@ -24,10 +29,9 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.ml.baseline import BASELINE_COLUMN, historical_mean_forecast
-from app.services import price_history
-from app.services.expected_returns import ExcludedTicker
-from app.services.market_data import PricePoint
-from app.services.risk_analytics import ANNUALIZATION_FACTOR
+from app.services.market_calendar import ANNUALIZATION_FACTOR
+from app.services.market_data import NO_DATA_REASON, PricePoint
+from app.services.universe import ExcludedTicker
 
 SMA_SHORT_WINDOW = 20
 SMA_LONG_WINDOW = 50
@@ -50,6 +54,13 @@ WARMUP_ROWS = max(
     MACD_SLOW_SPAN + MACD_SIGNAL_SPAN - 2,
 )
 MIN_HISTORY_ROWS = WARMUP_ROWS + 1
+
+# Panel rows (used for forecasting and evaluation) need at least this many
+# trading days of history before their date, so the recursive smoothers'
+# dependence on where the series starts is negligible. Equals the baseline
+# lookback. A ticker therefore needs MIN_PANEL_ROWS rows to appear at all.
+MIN_FEATURE_HISTORY = 252
+MIN_PANEL_ROWS = MIN_FEATURE_HISTORY + 1
 
 FEATURE_COLUMNS = [
     "close_to_sma_20",
@@ -182,38 +193,39 @@ class FeaturePanel:
     excluded: list[ExcludedTicker]
 
 
-def build_feature_panel(
-    db: Session,
+def build_panel_from_prices(
     tickers: list[str],
-    start: date,
-    end: date,
+    points_by_ticker: dict[str, list[PricePoint]],
+    errors: dict[str, str],
     horizon: int = DEFAULT_HORIZON,
 ) -> FeaturePanel:
-    """Long table of features, label and the historical-mean baseline
-    forecast for [start, end) (end exclusive), read through the price cache."""
-    history = price_history.get_price_history(db, tickers, start, end)
+    """In-memory panel builder (no database). `errors` maps a ticker to the
+    reason its prices could not be fetched."""
     frames = []
     excluded: list[ExcludedTicker] = []
 
     for ticker in tickers:
-        if ticker in history.errors:
-            excluded.append(ExcludedTicker(ticker=ticker, reason=history.errors[ticker].reason))
+        if ticker in errors:
+            excluded.append(ExcludedTicker(ticker=ticker, reason=errors[ticker]))
             continue
-        points = history.points[ticker]
-        if len(points) < MIN_HISTORY_ROWS:
+        points = points_by_ticker.get(ticker, [])
+        if not points:
+            excluded.append(ExcludedTicker(ticker=ticker, reason=NO_DATA_REASON))
+            continue
+        if len(points) < MIN_PANEL_ROWS:
             excluded.append(
                 ExcludedTicker(
                     ticker=ticker,
                     reason=(
                         f"only {len(points)} trading day(s) of history; at least "
-                        f"{MIN_HISTORY_ROWS} are needed"
+                        f"{MIN_PANEL_ROWS} are needed"
                     ),
                 )
             )
             continue
 
         prices = prices_to_frame(points)
-        frame = compute_features(prices)
+        frame = compute_features(prices).loc[prices.index[MIN_FEATURE_HISTORY]:]
         frame[LABEL_COLUMN] = forward_return(prices["close"], horizon).loc[frame.index]
         frame[BASELINE_COLUMN] = historical_mean_forecast(prices["close"], horizon).loc[frame.index]
         frame.insert(0, "ticker", ticker)
@@ -225,3 +237,20 @@ def build_feature_panel(
         panel=panel[columns].sort_values(["date", "ticker"], ignore_index=True),
         excluded=excluded,
     )
+
+
+def build_feature_panel(
+    db: Session,
+    tickers: list[str],
+    start: date,
+    end: date,
+    horizon: int = DEFAULT_HORIZON,
+) -> FeaturePanel:
+    """Panel for [start, end) (end exclusive), read through the price cache."""
+    # Imported here so this module stays importable without a database; the
+    # offline evaluation script uses build_panel_from_prices directly.
+    from app.services import price_history
+
+    history = price_history.get_price_history(db, tickers, start, end)
+    errors = {ticker: exc.reason for ticker, exc in history.errors.items()}
+    return build_panel_from_prices(tickers, history.points, errors, horizon)
