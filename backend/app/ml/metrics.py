@@ -38,3 +38,12 @@ def daily_ic(dates: pd.Series, forecast: pd.Series, realized: pd.Series) -> pd.S
 
 def mean_ic(dates: pd.Series, forecast: pd.Series, realized: pd.Series) -> float:
     return float(daily_ic(dates, forecast, realized).mean())
+
+
+def ic_standard_error(daily: pd.Series) -> float:
+    """std(daily IC, ddof=1) / sqrt(number of IC dates). Treats daily ICs as
+    independent; with overlapping multi-day labels they are autocorrelated,
+    so this understates the true uncertainty. Context only, not a test."""
+    if len(daily) < 2:
+        return float("nan")
+    return float(daily.std(ddof=1) / np.sqrt(len(daily)))

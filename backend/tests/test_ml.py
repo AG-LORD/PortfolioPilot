@@ -6,8 +6,21 @@ import pytest
 from pydantic import TypeAdapter
 
 from app.ml.baseline import BASELINE_COLUMN, BASELINE_LOOKBACK, historical_mean_forecast
-from app.ml.evaluation import BASELINE_MODEL, evaluate_models, run_walk_forward
-from app.ml.metrics import MIN_IC_TICKERS, daily_ic, hit_rate, mean_absolute_error, mean_ic
+from app.ml.evaluation import (
+    BASELINE_MODEL,
+    evaluate_models,
+    ic_standard_errors,
+    per_block_ic,
+    run_walk_forward,
+)
+from app.ml.metrics import (
+    MIN_IC_TICKERS,
+    daily_ic,
+    hit_rate,
+    ic_standard_error,
+    mean_absolute_error,
+    mean_ic,
+)
 from app.ml.models import HIST_GRADIENT_BOOSTING, MODEL_NAMES, RIDGE
 from app.ml.splits import walk_forward_splits
 from app.schemas.ml import ModelEvaluationRead
@@ -156,6 +169,26 @@ def test_hit_rate_excludes_zero_realized_and_counts_zero_forecast_as_miss():
     forecast = pd.Series([0.1, -0.1, 0.2, 0.0])
     realized = pd.Series([0.05, 0.02, 0.0, 0.01])
     assert hit_rate(forecast, realized) == pytest.approx(1 / 3)
+
+
+def test_ic_standard_error_known_value():
+    daily = pd.Series([0.1, 0.2, 0.3, 0.4])
+    # sample std = sqrt(((0.15)^2 + (0.05)^2) * 2 / 3) = 0.129099...; / sqrt(4)
+    assert ic_standard_error(daily) == pytest.approx(0.1290994449 / 2, rel=1e-9)
+    assert np.isnan(ic_standard_error(pd.Series([0.1])))
+
+
+def test_per_block_ic_and_standard_errors_cover_every_model_and_block():
+    result = run_walk_forward(_panel(signal=1.0), n_blocks=3, horizon=HORIZON)
+    blocks = per_block_ic(result)
+    standard_errors = ic_standard_errors(result)
+    assert set(blocks) == set(standard_errors) == {BASELINE_MODEL, *MODEL_NAMES}
+    for model_blocks in blocks.values():
+        assert [b.block for b in model_blocks] == [1, 2, 3]
+        assert all(b.start <= b.end and b.ic_dates > 0 for b in model_blocks)
+    assert all(0 < se < 0.1 for se in standard_errors.values())
+    for b, split in zip(blocks[RIDGE], result.splits):
+        assert b.start == pd.Timestamp(min(split.test_dates)).date()
 
 
 def test_ic_skips_dates_with_too_few_tickers():

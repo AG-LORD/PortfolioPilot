@@ -29,6 +29,10 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Offline evaluation outputs (keep only the README)
+backend/results/*
+!backend/results/README.md
+
 # ML artifacts
 *.joblib
 *.pkl

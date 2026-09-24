@@ -44,7 +44,7 @@ Because every feature is a ratio of prices or a function of returns, multiplying
 
 A feature at date t uses only rows dated ≤ t:
 - Only trailing windows: no centered windows, no backfill, no negative shifts, and no full-series statistics (no global mean/std normalization).
-- Warm-up rows, where any window is still incomplete, are dropped and never filled. The warm-up is `WARMUP_ROWS` = 60 rows (set by the longest window, the 60-day momentum). A ticker needs at least 61 rows to produce one feature row.
+- Warm-up rows, where any window is still incomplete, are dropped and never filled. The warm-up is `WARMUP_ROWS` = 60 rows (set by the longest window, the 60-day momentum). `compute_features` produces its first row from 61 rows of prices; panels require more history (see below).
 - Normalization happens only inside the model pipeline, fitted on the training fold (section 6).
 
 Evidence (tests in `backend/tests/test_features.py`):
@@ -53,7 +53,11 @@ Evidence (tests in `backend/tests/test_features.py`):
 - **Scale invariance:** prices × 4 give bit-identical features; prices × 3.7 agree to a relative 1e-10.
 - **The test detects leaks:** replacing the SMA with a centered window makes the truncation test fail (checked manually during development).
 
-Caveat: EMA and Wilder smoothers are recursive and start at the first row of the series they are given. A value at t therefore also depends, with exponentially decaying weight, on where the fetched series *starts*. It never depends on later data. At the first kept row (after the 60-row warm-up), the starting values still carry about 1% of the weight in MACD's EMA26 ((25/27)^60) and about 3% in the Wilder-smoothed RSI and ATR ((13/14)^46). That weight decays geometrically on later rows.
+Caveat: EMA and Wilder smoothers are recursive and start at the first row of the series they are given. A value at t therefore also depends, with exponentially decaying weight, on where the fetched series *starts*. It never depends on later data. At the first row after the 60-row warm-up, the starting values would still carry about 1% of the weight in MACD's EMA26 ((25/27)^60) and about 3% in the Wilder-smoothed RSI and ATR ((13/14)^46).
+
+To make this negligible, every panel row (for forecasting and evaluation alike) requires `MIN_FEATURE_HISTORY` = 252 trading days of history before its date, the same as the baseline lookback. At that point the starting values' weight is about 4·10⁻⁹ for EMA26 ((25/27)^252) and about 2·10⁻⁸ for RSI/ATR ((13/14)^238).
+
+`compute_features` itself still only drops the 60-row warm-up. The 252-day rule is enforced where panels are built (`build_panel_from_prices`, used by both `build_feature_panel` and the evaluation script).
 
 ## 4. Label
 
@@ -66,8 +70,10 @@ Caveat: EMA and Wilder smoothers are recursive and start at the first row of the
 
 `build_feature_panel(db, tickers, start, end, horizon=20)` returns one long table with the columns `date, ticker, <12 features>, label, hist_mean_forecast`.
 
-- It reads prices through the cache.
-- Tickers with no data, or fewer than 61 rows, are excluded with a reason, in the same style as recommendations.
+- It reads prices through the cache. The same in-memory builder, `build_panel_from_prices`, is used by the offline evaluation script (section 8).
+- Rows start at a ticker's 253rd trading day, so each has at least `MIN_FEATURE_HISTORY` = 252 days of history before it (section 3). The baseline is therefore available on every panel row.
+- Tickers with no data, or fewer than 253 rows, are excluded with a reason, in the same style as recommendations.
+- Training rows also start at day 253. That discards some early training data in exchange for features that do not depend on the series start.
 
 ## 6. Walk-forward evaluation
 
@@ -112,9 +118,23 @@ Tests on synthetic panels (`backend/tests/test_ml.py`):
 - Results are deterministic.
 - On a panel where one feature truly drives the label, IC ≈ 0.6. On pure noise, |IC| < 0.02.
 
-## 8. Known limitations
+## 8. Offline evaluation script
 
-- **Overlapping labels:** 20-day forward returns on consecutive days overlap, so daily metric observations are autocorrelated. Standard errors computed naively from them would be too small. No significance tests are reported yet.
+`backend/scripts/run_evaluation.py` runs the full evaluation on real prices. From `backend/`:
+
+```
+python -m scripts.run_evaluation --tickers RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK --no-cache
+python -m scripts.run_evaluation --universe NIFTY50 --start 2019-01-01 --blocks 5 --horizon 20
+```
+
+- **Arguments:** `--universe` or `--tickers` (exactly one); `--start` (default 2019-01-01); `--end` (inclusive, default the last completed IST trading day); `--blocks` (default 5); `--horizon` (default 20).
+- **`--no-cache`:** fetches prices with one batched yfinance download into memory. It never imports the database layer; the run checks this and fails otherwise. Without the flag, prices are read through the price cache in `DATABASE_URL`, and newly fetched prices are stored there.
+- **Output:** a metrics table, per-block mean IC per model, and a data summary (date ranges, tickers used, tickers excluded with reasons, scored rows). The same report is written to `backend/results/evaluation_<run date>.json` (not committed).
+- **IC standard error:** the report adds std(daily IC) / √(number of IC dates) per model. It treats daily ICs as independent, but consecutive 20-day labels overlap, so daily ICs are autocorrelated and this standard error is optimistic. It is reported for context only, not as a significance test. Example: on synthetic random-walk prices with 6 tickers, one model showed a mean IC of −0.23 with a naive standard error of 0.034, which is pure noise.
+
+## 9. Known limitations
+
+- **Overlapping labels:** 20-day forward returns on consecutive days overlap, so daily metric observations are autocorrelated. The IC standard error in the evaluation report is computed naively and is therefore too small. No significance tests are reported yet.
 - **Survivorship bias:** evaluating on today's index constituents over past dates favors stocks that survived into the index. The universe file records the date of its constituent list (`as_of`).
 - **One calendar:** splits use the union of dates in the panel and assume all tickers trade on the NSE calendar.
-- **Recursive smoothers depend on the series start** (section 3).
+- **Recursive smoothers depend on the series start** (section 3). `MIN_FEATURE_HISTORY` = 252 makes this negligible for panel rows, at the cost of the first year of each ticker's history.

@@ -13,7 +13,7 @@ import pandas as pd
 from sklearn.pipeline import Pipeline
 
 from app.ml.baseline import BASELINE_COLUMN
-from app.ml.metrics import hit_rate, mean_absolute_error, mean_ic
+from app.ml.metrics import daily_ic, hit_rate, ic_standard_error, mean_absolute_error, mean_ic
 from app.ml.models import MODEL_NAMES, make_model
 from app.ml.splits import N_TEST_BLOCKS, WalkForwardSplit, walk_forward_splits
 from app.services.features import DEFAULT_HORIZON, FEATURE_COLUMNS, LABEL_COLUMN
@@ -92,7 +92,10 @@ def _to_decimal(value: float) -> Decimal:
 def evaluate_models(
     panel: pd.DataFrame, n_blocks: int = N_TEST_BLOCKS, horizon: int = DEFAULT_HORIZON
 ) -> list[ModelEvaluation]:
-    result = run_walk_forward(panel, n_blocks=n_blocks, horizon=horizon)
+    return summarize_walk_forward(run_walk_forward(panel, n_blocks=n_blocks, horizon=horizon))
+
+
+def summarize_walk_forward(result: WalkForwardResult) -> list[ModelEvaluation]:
     predictions = result.predictions
     realized = predictions[LABEL_COLUMN]
     test_blocks = int(predictions["block"].nunique())
@@ -118,3 +121,41 @@ def evaluate_models(
             )
         )
     return evaluations
+
+
+@dataclass
+class BlockIC:
+    block: int  # 1-based
+    start: date
+    end: date
+    ic_dates: int
+    mean_ic: float  # NaN when no date in the block has a usable IC
+
+
+def _daily_ic(predictions: pd.DataFrame, model: str) -> pd.Series:
+    return daily_ic(predictions["date"], predictions[model], predictions[LABEL_COLUMN])
+
+
+def per_block_ic(result: WalkForwardResult) -> dict[str, list[BlockIC]]:
+    blocks: dict[str, list[BlockIC]] = {}
+    for model in (BASELINE_MODEL, *MODEL_NAMES):
+        blocks[model] = []
+        for block, rows in result.predictions.groupby("block", sort=True):
+            daily = _daily_ic(rows, model)
+            blocks[model].append(
+                BlockIC(
+                    block=int(block) + 1,
+                    start=pd.Timestamp(rows["date"].min()).date(),
+                    end=pd.Timestamp(rows["date"].max()).date(),
+                    ic_dates=len(daily),
+                    mean_ic=float(daily.mean()) if len(daily) else float("nan"),
+                )
+            )
+    return blocks
+
+
+def ic_standard_errors(result: WalkForwardResult) -> dict[str, float]:
+    return {
+        model: ic_standard_error(_daily_ic(result.predictions, model))
+        for model in (BASELINE_MODEL, *MODEL_NAMES)
+    }
