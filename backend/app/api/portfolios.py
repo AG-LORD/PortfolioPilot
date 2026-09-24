@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user_id, get_db
 from app.schemas.holding import HoldingRead
 from app.schemas.optimization import TargetAllocationItem, TargetAllocationRead
+from app.schemas.overview import PortfolioOverviewRead
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead
 from app.schemas.portfolio_snapshot import PortfolioSnapshotRead
 from app.schemas.recommendation import RecommendationRead, RecommendationRequest
@@ -18,6 +19,7 @@ from app.schemas.valuation import PortfolioValuation
 from app.services.expected_returns import InsufficientHistoryError
 from app.services.market_data import MarketDataUnavailableError
 from app.services.optimization import OptimizationError, get_portfolio_target_allocation
+from app.services.overview import get_portfolio_overview
 from app.services.portfolios import (
     create_portfolio,
     get_portfolio,
@@ -55,6 +57,15 @@ def read_own_portfolios(
     db: Session = Depends(get_db),
 ):
     return list_portfolios(db, user_id)
+
+
+# Declared before /{portfolio_id} so "overview" is not parsed as a portfolio id.
+@router.get("/overview", response_model=PortfolioOverviewRead)
+def read_portfolios_overview(
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    return get_portfolio_overview(db, user_id)
 
 
 @router.get("/{portfolio_id}", response_model=PortfolioRead)
@@ -192,6 +203,31 @@ def create_portfolio_recommendation(
         raise HTTPException(status_code=422, detail=str(exc))
 
     return RecommendationRead(portfolio_id=portfolio_id, **asdict(recommendation))
+
+
+# Saved recommendations are not persisted yet: the list is always empty and
+# every id is not found. Ownership is still checked.
+@router.get("/{portfolio_id}/recommendations", response_model=list[RecommendationRead])
+def read_portfolio_recommendations(
+    portfolio_id: UUID,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    get_portfolio(db, user_id, portfolio_id)
+    return []
+
+
+@router.get(
+    "/{portfolio_id}/recommendations/{recommendation_id}", response_model=RecommendationRead
+)
+def read_portfolio_recommendation(
+    portfolio_id: UUID,
+    recommendation_id: UUID,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    get_portfolio(db, user_id, portfolio_id)
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recommendation not found")
 
 
 @router.post("/{portfolio_id}/snapshots", response_model=PortfolioSnapshotRead)

@@ -169,7 +169,7 @@ def _sized_example(capital):
     target = optimize_target_weights(
         tickers, returns, cov, max_position_weight=Decimal("0.3"), target_volatility=Decimal("0.15")
     )
-    return target, returns, cov, size_allocation(target, returns, cov, capital)
+    return target, returns, cov, size_allocation(target, returns, cov, capital, Decimal("0.3"))
 
 
 def test_size_allocation_amounts_sum_exactly_to_capital():

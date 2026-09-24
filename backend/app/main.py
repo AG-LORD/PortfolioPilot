@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.ml import router as ml_router
 from app.api.portfolios import router as portfolios_router
+from app.api.universes import router as universes_router
 from app.api.users import router as users_router
 
 app = FastAPI(
@@ -19,6 +21,8 @@ app.add_middleware(
 
 app.include_router(users_router)
 app.include_router(portfolios_router)
+app.include_router(universes_router)
+app.include_router(ml_router)
 
 
 @app.get("/health")

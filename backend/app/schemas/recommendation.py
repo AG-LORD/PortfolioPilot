@@ -1,9 +1,13 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, model_validator
+
+# The request only accepts "historical" for now; responses can also carry
+# "ml" so ML-backed results fit the same contract later.
+ResponseReturnModel = Literal["historical", "ml"]
 
 
 class RecommendationRequest(BaseModel):
@@ -23,6 +27,7 @@ class RecommendedAllocationItem(BaseModel):
     expected_return: Decimal
     target_weight: Decimal
     amount: Decimal
+    at_position_limit: bool
 
 
 class ExcludedTickerItem(BaseModel):
@@ -36,10 +41,14 @@ class RecommendationConstraintsRead(BaseModel):
 
 
 class RecommendationRead(BaseModel):
+    id: UUID | None = None
+    created_at: datetime | None = None
     portfolio_id: UUID
     universe: str
     universe_as_of: date | None
-    return_model: str
+    return_model: ResponseReturnModel
+    model_version: str | None = None
+    forecast_as_of: date | None = None
     capital: Decimal
     allocations: list[RecommendedAllocationItem]
     cash_weight: Decimal
@@ -48,3 +57,15 @@ class RecommendationRead(BaseModel):
     expected_portfolio_volatility: Decimal
     constraints: RecommendationConstraintsRead
     excluded: list[ExcludedTickerItem]
+
+
+class RecommendationSummary(BaseModel):
+    id: UUID
+    created_at: datetime
+    universe: str
+    return_model: ResponseReturnModel
+    model_version: str | None
+    capital: Decimal
+    cash_weight: Decimal
+    expected_portfolio_return: Decimal
+    expected_portfolio_volatility: Decimal

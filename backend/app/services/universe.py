@@ -25,6 +25,13 @@ class Universe(NamedTuple):
     tickers: list[str]
 
 
+class UniverseListing(NamedTuple):
+    name: str
+    as_of: date | None
+    tickers: list[str]
+    configured: bool
+
+
 def normalize_tickers(tickers: list[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -61,3 +68,17 @@ def get_universe(name: str) -> Universe:
         as_of=date.fromisoformat(data["as_of"]),
         tickers=normalize_tickers(data["tickers"]),
     )
+
+
+def list_universes() -> list[UniverseListing]:
+    """Every known universe; ones not configured yet are listed with
+    configured=False, no as_of and no tickers."""
+    listings = []
+    for key in sorted(UNIVERSE_FILES):
+        try:
+            universe = get_universe(key)
+        except UniverseError:
+            listings.append(UniverseListing(name=key, as_of=None, tickers=[], configured=False))
+        else:
+            listings.append(UniverseListing(*universe, configured=True))
+    return listings

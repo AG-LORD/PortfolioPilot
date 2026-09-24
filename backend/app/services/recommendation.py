@@ -32,6 +32,8 @@ from app.services.universe import CUSTOM_UNIVERSE, get_universe, normalize_ticke
 
 AMOUNT_QUANTUM = Decimal("0.01")
 METRIC_DECIMALS = 6
+# Matches the optimizer's feasibility tolerance.
+POSITION_LIMIT_TOLERANCE = Decimal("0.0001")
 
 
 @dataclass
@@ -40,6 +42,7 @@ class RecommendedAllocation:
     expected_return: Decimal
     target_weight: Decimal
     amount: Decimal
+    at_position_limit: bool
 
 
 @dataclass
@@ -78,6 +81,7 @@ def size_allocation(
     expected_returns: list[Decimal],
     covariance: list[list[Decimal]],
     capital: Decimal,
+    max_position_weight: Decimal,
 ) -> SizedAllocation:
     """Zero-weight tickers are omitted from the returned allocations."""
     capital = capital.quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN)
@@ -94,6 +98,7 @@ def size_allocation(
             expected_return=a.expected_return,
             target_weight=a.target_weight,
             amount=(a.target_weight * capital).quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN),
+            at_position_limit=abs(a.target_weight - max_position_weight) <= POSITION_LIMIT_TOLERANCE,
         )
         for a in target.allocations
         if a.target_weight != 0
@@ -142,7 +147,11 @@ def get_portfolio_recommendation(
     )
 
     sized = size_allocation(
-        target, data.inputs.expected_returns, data.inputs.covariance, portfolio.cash_balance
+        target,
+        data.inputs.expected_returns,
+        data.inputs.covariance,
+        portfolio.cash_balance,
+        risk_profile.max_position_weight,
     )
 
     return Recommendation(
