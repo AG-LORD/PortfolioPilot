@@ -11,6 +11,7 @@ from app.schemas.holding import HoldingRead
 from app.schemas.optimization import TargetAllocationItem, TargetAllocationRead
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead
 from app.schemas.portfolio_snapshot import PortfolioSnapshotRead
+from app.schemas.recommendation import RecommendationRead, RecommendationRequest
 from app.schemas.risk_analytics import RiskAnalyticsRead
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.schemas.valuation import PortfolioValuation
@@ -23,6 +24,7 @@ from app.services.portfolios import (
     list_holdings,
     list_portfolios,
 )
+from app.services.recommendation import get_portfolio_recommendation
 from app.services.risk_analytics import (
     DEFAULT_RISK_FREE_RATE_ANNUAL,
     DEFAULT_VAR_CONFIDENCE,
@@ -30,6 +32,7 @@ from app.services.risk_analytics import (
 )
 from app.services.snapshots import create_portfolio_snapshot
 from app.services.transactions import execute_transaction, list_transactions
+from app.services.universe import UniverseError
 from app.services.valuation import get_portfolio_valuation
 
 logger = logging.getLogger(__name__)
@@ -166,6 +169,29 @@ def read_portfolio_target_allocation(
         ],
         cash_weight=weights.cash_weight,
     )
+
+
+@router.post("/{portfolio_id}/recommendation", response_model=RecommendationRead)
+def create_portfolio_recommendation(
+    portfolio_id: UUID,
+    data: RecommendationRequest,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    try:
+        recommendation = get_portfolio_recommendation(
+            db,
+            user_id,
+            portfolio_id,
+            universe=data.universe,
+            tickers=data.tickers,
+            return_model=data.return_model,
+        )
+    except (UniverseError, InsufficientHistoryError, OptimizationError) as exc:
+        logger.warning("Recommendation failed for portfolio %s: %s", portfolio_id, exc)
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return RecommendationRead(portfolio_id=portfolio_id, **asdict(recommendation))
 
 
 @router.post("/{portfolio_id}/snapshots", response_model=PortfolioSnapshotRead)

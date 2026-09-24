@@ -34,20 +34,26 @@ class ExpectedReturnsInput:
     covariance: list[list[Decimal]]
 
 
-def get_expected_returns_and_covariance(tickers: list[str]) -> ExpectedReturnsInput:
-    if not tickers:
-        raise InsufficientHistoryError("No tickers provided for optimization.")
+@dataclass
+class ExcludedTicker:
+    ticker: str
+    reason: str
 
+
+@dataclass
+class UniverseReturnsInput:
+    inputs: ExpectedReturnsInput
+    excluded: list[ExcludedTicker]
+
+
+def _history_window() -> tuple[date, date]:
     end = date.today()
-    start = end - timedelta(days=LOOKBACK_DAYS)
+    return end - timedelta(days=LOOKBACK_DAYS), end
 
-    # market_data raises MarketDataUnavailableError per-ticker if a symbol
-    # has no data — let it propagate (same fail-entirely policy as
-    # valuation's price fetch).
-    price_series = {
-        ticker: market_data.get_historical_prices(ticker, start, end) for ticker in tickers
-    }
 
+def _estimate_from_price_series(
+    tickers: list[str], price_series: dict[str, list[market_data.PricePoint]]
+) -> ExpectedReturnsInput:
     # Align on dates common to every ticker so the return/covariance matrix
     # is well-defined (simplest safe approach; no forward-fill/interpolation).
     common_dates = None
@@ -87,3 +93,59 @@ def get_expected_returns_and_covariance(tickers: list[str]) -> ExpectedReturnsIn
     covariance = [[Decimal(str(v)) for v in row] for row in annualized_cov]
 
     return ExpectedReturnsInput(tickers=tickers, expected_returns=expected_returns, covariance=covariance)
+
+
+def get_expected_returns_and_covariance(tickers: list[str]) -> ExpectedReturnsInput:
+    if not tickers:
+        raise InsufficientHistoryError("No tickers provided for optimization.")
+
+    start, end = _history_window()
+
+    # market_data raises MarketDataUnavailableError per-ticker if a symbol
+    # has no data — let it propagate (same fail-entirely policy as
+    # valuation's price fetch).
+    price_series = {
+        ticker: market_data.get_historical_prices(ticker, start, end) for ticker in tickers
+    }
+    return _estimate_from_price_series(tickers, price_series)
+
+
+def get_expected_returns_for_universe(tickers: list[str]) -> UniverseReturnsInput:
+    """Like get_expected_returns_and_covariance, but excludes (with a reason)
+    tickers with no data or too little history instead of failing outright."""
+    if not tickers:
+        raise InsufficientHistoryError("No tickers provided for recommendation.")
+
+    start, end = _history_window()
+    price_series: dict[str, list[market_data.PricePoint]] = {}
+    excluded: list[ExcludedTicker] = []
+
+    for ticker in tickers:
+        try:
+            points = market_data.get_historical_prices(ticker, start, end)
+        except market_data.MarketDataUnavailableError as exc:
+            excluded.append(ExcludedTicker(ticker=ticker, reason=exc.reason))
+            continue
+        if len(points) < MIN_HISTORY_OBSERVATIONS + 1:
+            excluded.append(
+                ExcludedTicker(
+                    ticker=ticker,
+                    reason=(
+                        f"only {len(points)} trading day(s) of history; at least "
+                        f"{MIN_HISTORY_OBSERVATIONS + 1} are needed"
+                    ),
+                )
+            )
+            continue
+        price_series[ticker] = points
+
+    if not price_series:
+        raise InsufficientHistoryError(
+            f"None of the {len(tickers)} requested ticker(s) have sufficient price history."
+        )
+
+    eligible = list(price_series)
+    return UniverseReturnsInput(
+        inputs=_estimate_from_price_series(eligible, price_series),
+        excluded=excluded,
+    )

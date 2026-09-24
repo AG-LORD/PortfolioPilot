@@ -1,0 +1,6 @@
+{
+  "name": "NIFTY50",
+  "as_of": null,
+  "source": "PLACEHOLDER - constituent list not yet supplied. Replace 'tickers' with the official NSE NIFTY 50 constituents (bare NSE symbols, no .NS suffix) and set 'as_of' (YYYY-MM-DD) to the date of that list.",
+  "tickers": []
+}
