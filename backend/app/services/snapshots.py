@@ -1,17 +1,13 @@
 from datetime import datetime, time
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models import PortfolioSnapshot
+from app.services.market_calendar import MARKET_TIMEZONE
 from app.services.portfolios import get_portfolio
 from app.services.valuation import get_portfolio_valuation
-
-# PortfolioPilot is an Indian-equity app: a "day" for snapshot purposes
-# is a calendar date in this market timezone, not UTC or the caller's.
-MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 def _market_snapshot_date(now: datetime) -> datetime:

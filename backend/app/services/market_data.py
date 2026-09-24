@@ -16,6 +16,9 @@ from decimal import Decimal
 import yfinance as yf
 
 
+NO_DATA_REASON = "no historical data returned"
+
+
 class MarketDataUnavailableError(Exception):
     def __init__(self, ticker: str, reason: str):
         self.ticker = ticker
@@ -73,7 +76,7 @@ def get_historical_prices(ticker: str, start: date, end: date) -> list[PricePoin
         raise MarketDataUnavailableError(ticker, f"history request failed: {exc}") from exc
 
     if history.empty:
-        raise MarketDataUnavailableError(ticker, "no historical data returned")
+        raise MarketDataUnavailableError(ticker, NO_DATA_REASON)
 
     return _frame_to_points(history)
 

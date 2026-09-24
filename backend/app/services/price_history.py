@@ -28,7 +28,7 @@ more batch for tickers escalated to a full refresh by the seam check).
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import delete, select
@@ -37,16 +37,17 @@ from sqlalchemy.orm import Session
 
 from app.models import DailyPrice, PriceCacheCoverage
 from app.services import market_data
-from app.services.market_data import MarketDataUnavailableError, PricePoint
-from app.services.snapshots import MARKET_TIMEZONE
+from app.services.market_calendar import (  # noqa: F401 (re-exported for callers/tests)
+    CLOSE_SETTLE_BUFFER,
+    MARKET_CLOSE,
+    MARKET_TIMEZONE,
+    last_completed_trading_day,
+)
+from app.services.market_data import NO_DATA_REASON, MarketDataUnavailableError, PricePoint
 
 SOURCE = "yfinance"
-MARKET_CLOSE = time(15, 30)
-CLOSE_SETTLE_BUFFER = timedelta(minutes=30)
 FULL_REFRESH_MAX_AGE = timedelta(days=7)
 SEAM_TOLERANCE = Decimal("0.0001")  # 0.01%
-
-NO_DATA_REASON = "no historical data returned"
 
 
 @dataclass
@@ -68,14 +69,6 @@ class _Plan:
 
 def _now() -> datetime:
     return datetime.now(MARKET_TIMEZONE)
-
-
-def last_completed_trading_day(now: datetime) -> date:
-    local = now.astimezone(MARKET_TIMEZONE)
-    completed_at = datetime.combine(local.date(), MARKET_CLOSE, tzinfo=MARKET_TIMEZONE)
-    if local >= completed_at + CLOSE_SETTLE_BUFFER:
-        return local.date()
-    return local.date() - timedelta(days=1)
 
 
 def get_price_history(

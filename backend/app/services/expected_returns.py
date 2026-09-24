@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.services import market_data, price_history
 from app.services.risk_analytics import ANNUALIZATION_FACTOR
+from app.services.universe import ExcludedTicker
 
 LOOKBACK_DAYS = 365
 MIN_HISTORY_OBSERVATIONS = 30
@@ -34,12 +35,6 @@ class ExpectedReturnsInput:
     tickers: list[str]
     expected_returns: list[Decimal]
     covariance: list[list[Decimal]]
-
-
-@dataclass
-class ExcludedTicker:
-    ticker: str
-    reason: str
 
 
 @dataclass

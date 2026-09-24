@@ -19,10 +19,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.services.market_calendar import ANNUALIZATION_FACTOR
 from app.services.portfolios import get_portfolio
 from app.services.snapshots import MARKET_TIMEZONE, list_snapshots
 
-ANNUALIZATION_FACTOR = 252
 DEFAULT_RISK_FREE_RATE_ANNUAL = Decimal("0")
 DEFAULT_VAR_CONFIDENCE = Decimal("0.95")
 MIN_VAR_RETURN_OBSERVATIONS = 20

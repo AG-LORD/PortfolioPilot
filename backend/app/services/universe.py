@@ -5,6 +5,7 @@ NSE symbols (market_data appends the ".NS" suffix itself).
 """
 
 import json
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
@@ -23,6 +24,12 @@ class Universe(NamedTuple):
     name: str
     as_of: date | None
     tickers: list[str]
+
+
+@dataclass
+class ExcludedTicker:
+    ticker: str
+    reason: str
 
 
 class UniverseListing(NamedTuple):
