@@ -1,0 +1,47 @@
+{
+  "_mock": true,
+  "id": null,
+  "created_at": null,
+  "portfolio_id": "00000000-0000-4000-8000-000000000001",
+  "universe": "NIFTY50",
+  "universe_as_of": "2026-01-01",
+  "return_model": "historical",
+  "model_version": null,
+  "forecast_as_of": null,
+  "capital": "100000.00",
+  "allocations": [
+    {
+      "ticker": "MOCK_ALPHA",
+      "expected_return": "0.111111",
+      "target_weight": "0.1",
+      "amount": "10000.00",
+      "at_position_limit": true
+    },
+    {
+      "ticker": "MOCK_BRAVO",
+      "expected_return": "0.111111",
+      "target_weight": "0.1",
+      "amount": "10000.00",
+      "at_position_limit": true
+    },
+    {
+      "ticker": "MOCK_CHARLIE",
+      "expected_return": "0.055555",
+      "target_weight": "0.05",
+      "amount": "5000.00",
+      "at_position_limit": false
+    }
+  ],
+  "cash_weight": "0.75",
+  "cash_amount": "75000.00",
+  "expected_portfolio_return": "0.025000",
+  "expected_portfolio_volatility": "0.050000",
+  "constraints": {
+    "max_position_weight": "0.1",
+    "target_volatility": "0.15"
+  },
+  "excluded": [
+    { "ticker": "MOCK_NODATA", "reason": "no historical data returned" },
+    { "ticker": "MOCK_NEWLISTING", "reason": "only 10 trading day(s) of history; at least 31 are needed" }
+  ]
+}

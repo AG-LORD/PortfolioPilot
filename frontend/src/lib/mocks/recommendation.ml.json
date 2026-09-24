@@ -1,0 +1,37 @@
+{
+  "_mock": true,
+  "id": "00000000-0000-4000-8000-0000000000aa",
+  "created_at": "2026-01-01T10:00:00+05:30",
+  "portfolio_id": "00000000-0000-4000-8000-000000000001",
+  "universe": "NIFTY50",
+  "universe_as_of": "2026-01-01",
+  "return_model": "ml",
+  "model_version": "mock-model-0.0.0",
+  "forecast_as_of": "2026-01-01",
+  "capital": "100000.00",
+  "allocations": [
+    {
+      "ticker": "MOCK_BRAVO",
+      "expected_return": "0.222222",
+      "target_weight": "0.1",
+      "amount": "10000.00",
+      "at_position_limit": true
+    },
+    {
+      "ticker": "MOCK_DELTA",
+      "expected_return": "0.111111",
+      "target_weight": "0.08",
+      "amount": "8000.00",
+      "at_position_limit": false
+    }
+  ],
+  "cash_weight": "0.82",
+  "cash_amount": "82000.00",
+  "expected_portfolio_return": "0.031111",
+  "expected_portfolio_volatility": "0.040000",
+  "constraints": {
+    "max_position_weight": "0.1",
+    "target_volatility": "0.15"
+  },
+  "excluded": []
+}

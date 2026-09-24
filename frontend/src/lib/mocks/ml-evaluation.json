@@ -1,0 +1,20 @@
+[
+  {
+    "_mock": true,
+    "model": "mock_historical_mean",
+    "mae": "0.011111",
+    "hit_rate": "0.5",
+    "mean_ic": "0.01",
+    "test_blocks": 3,
+    "as_of": "2026-01-01"
+  },
+  {
+    "_mock": true,
+    "model": "mock_gradient_boosting",
+    "mae": "0.010000",
+    "hit_rate": "0.55",
+    "mean_ic": "0.02",
+    "test_blocks": 3,
+    "as_of": "2026-01-01"
+  }
+]

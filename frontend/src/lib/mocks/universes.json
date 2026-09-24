@@ -1,0 +1,16 @@
+[
+  {
+    "_mock": true,
+    "name": "NIFTY50",
+    "as_of": "2026-01-01",
+    "tickers": ["MOCK_ALPHA", "MOCK_BRAVO", "MOCK_CHARLIE", "MOCK_DELTA"],
+    "configured": true
+  },
+  {
+    "_mock": true,
+    "name": "MOCK_UNCONFIGURED",
+    "as_of": null,
+    "tickers": [],
+    "configured": false
+  }
+]

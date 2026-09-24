@@ -1,0 +1,51 @@
+{
+  "_mock": true,
+  "totals": {
+    "portfolio_count": 2,
+    "initial_capital": "300000.0000",
+    "cash_balance": "150000.0000",
+    "market_value": null,
+    "total_value": null,
+    "unrealized_pnl": null
+  },
+  "portfolios": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "name": "Mock Growth Portfolio",
+      "risk_category": "moderate",
+      "initial_capital": "100000.0000",
+      "cash_balance": "50000.0000",
+      "valuation_status": "ok",
+      "market_value": "55555.00",
+      "total_value": "105555.00",
+      "unrealized_pnl": "5555.00",
+      "unrealized_pnl_pct": "0.1111",
+      "holdings_count": 3,
+      "latest_recommendation": {
+        "id": "00000000-0000-4000-8000-0000000000aa",
+        "created_at": "2026-01-01T10:00:00+05:30",
+        "universe": "NIFTY50",
+        "return_model": "ml",
+        "model_version": "mock-model-0.0.0",
+        "capital": "50000.00",
+        "cash_weight": "0.82",
+        "expected_portfolio_return": "0.031111",
+        "expected_portfolio_volatility": "0.040000"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "name": "Mock New Portfolio",
+      "risk_category": "conservative",
+      "initial_capital": "200000.0000",
+      "cash_balance": "100000.0000",
+      "valuation_status": "unavailable",
+      "market_value": null,
+      "total_value": null,
+      "unrealized_pnl": null,
+      "unrealized_pnl_pct": null,
+      "holdings_count": 0,
+      "latest_recommendation": null
+    }
+  ]
+}
