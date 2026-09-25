@@ -4,7 +4,7 @@ This document describes how PortfolioPilot builds features and labels, and
 how return-forecasting models are evaluated against a historical-mean
 baseline. Code: `backend/app/services/features.py` (features, label, panel)
 and `backend/app/ml/` (splits, models, baseline, metrics, evaluation).
-No model is used for live recommendations yet.
+Live recommendations can use the ML model (`return_model = "ml"`); see section 9.
 
 ## 1. Data
 
@@ -94,7 +94,7 @@ Early stopping is disabled because it would hold out a random validation slice o
 
 **Baseline** (`app/ml/baseline.py`), `historical_mean`:
 - forecast_t = h × arithmetic mean of the daily returns over the trailing 252 trading days, up to and including t.
-- This is the same estimator the live historical provider uses (mean daily return × 252 per year), rescaled to the 20-day horizon so it is compared on the same target.
+- The live `HistoricalMeanProvider` uses exactly this definition (it calls the same function), in annual units: 252 × the mean of the last 252 daily returns. The baseline here is that value rescaled to the 20-day horizon, so it is compared on the same target.
 - Rows without 252 trailing returns get no baseline forecast.
 
 **Common scoring set:** every model, baseline included, is scored on the same rows: test-block rows that have both a label and a baseline forecast. Otherwise the baseline would be scored on fewer, later dates than the ML models.
@@ -132,9 +132,65 @@ python -m scripts.run_evaluation --universe NIFTY50 --start 2019-01-01 --blocks 
 - **Output:** a metrics table, per-block mean IC per model, and a data summary (date ranges, tickers used, tickers excluded with reasons, scored rows). The same report is written to `backend/results/evaluation_<run date>.json` (not committed).
 - **IC standard error:** the report adds std(daily IC) / √(number of IC dates) per model. It treats daily ICs as independent, but consecutive 20-day labels overlap, so daily ICs are autocorrelated and this standard error is optimistic. It is reported for context only, not as a significance test. Example: on synthetic random-walk prices with 6 tickers, one model showed a mean IC of −0.23 with a naive standard error of 0.034, which is pure noise.
 
-## 9. Known limitations
+## 9. Live expected-return providers
+
+`POST /portfolios/{id}/recommendation` takes `return_model` = `historical` or `ml`. The code is in `backend/app/services/return_providers.py`. Both providers return **annualized arithmetic** expected returns (mean daily return × 252), the unit the optimizer uses. Covariance is the same for both: Ledoit-Wolf on the last 252 common daily returns, annualized.
+
+- **HistoricalMeanProvider:** 252 × the mean of each ticker's last 252 daily returns. This is the evaluation baseline (section 6) in annual units. Earlier versions used every return in a 365-calendar-day window and accepted as few as 31 days; that was standardized to this definition. A ticker now needs 253 prices.
+- **MLForecastProvider** runs per request, with no persistence:
+  1. Load about 6 years of prices through the price cache.
+  2. Build the point-in-time panel (section 5).
+  3. Fit the fixed-hyperparameter HistGradientBoosting model on every row whose label is already known, meaning labels ending on or before the latest price date.
+  4. Predict each ticker's feature row on the latest panel date.
+  5. Convert the 20-day forecast r₂₀ to annual units as r₂₀ × 252 / 20. This arithmetic scaling matches the historical provider's convention; it is not compounding.
+- **Fallback:** a ticker with no feature row on the latest date, or a non-finite forecast, falls back to its historical estimate, recorded per ticker as `source = "historical"`. With fewer than 500 labelled training rows, no model is trained and every ticker is historical.
+- **Metadata:** `model_version` is the fixed string `hist_gradient_boosting-h20-f12-v1` (model, horizon, feature count, version), so identical inputs give identical outputs. `forecast_as_of` is the latest panel date.
+- **Model choice:** HistGradientBoosting was chosen because it had the highest mean IC in the NIFTY 50 evaluation below. That selection used the evaluation period, so its IC there is not an independent out-of-sample estimate for the chosen model.
+
+## 10. Results: NIFTY 50
+
+Source file: `backend/results/evaluation_2026-09-25.json` (gitignored). Produced by `python -m scripts.run_evaluation --universe NIFTY50 --no-cache`.
+
+**Settings:**
+- Universe: the official NIFTY 50 list retrieved 2026-09-25 (revision recorded in the file).
+- Prices: 2019-01-01 to 2026-09-24, in memory (no database).
+- Walk-forward: 5 test blocks, 20-day horizon.
+
+**Data:**
+- All 50 tickers used.
+- 80,970 feature rows (2020-01-14 to 2026-09-24).
+- 67,139 scored rows (2021-02-16 to 2026-08-27).
+
+| Model | MAE | Hit rate | Mean IC | IC s.e.* |
+|---|---|---|---|---|
+| historical_mean | 0.0601 | 0.5378 | 0.0274 | 0.0059 |
+| ridge | 0.0596 | 0.5249 | 0.0237 | 0.0052 |
+| hist_gradient_boosting | 0.0617 | 0.5267 | 0.0515 | 0.0047 |
+
+\* Naive standard error; optimistic because 20-day labels overlap (section 8).
+
+Per-block mean IC:
+
+| Block | Dates | historical_mean | ridge | hist_gradient_boosting |
+|---|---|---|---|---|
+| 1 | 2021-02-16 to 2022-03-24 | 0.0462 | −0.0715 | 0.0196 |
+| 2 | 2022-03-25 to 2023-05-03 | −0.0510 | 0.0391 | 0.0561 |
+| 3 | 2023-05-04 to 2024-06-12 | 0.1616 | 0.1362 | 0.1260 |
+| 4 | 2024-06-13 to 2025-07-17 | −0.0512 | 0.0071 | 0.0621 |
+| 5 | 2025-07-18 to 2026-08-27 | 0.0313 | 0.0079 | −0.0053 |
+
+**Reading these results:**
+- **Weak signal:** all ICs are small, and they vary a lot from block to block.
+- **HistGradientBoosting** has the highest mean IC and is positive in 4 of 5 blocks, but its MAE is the worst of the three.
+- **Ridge** has the lowest MAE but the lowest mean IC.
+- **The historical baseline** has the best hit rate. That is consistent with mostly positive trailing means during a rising market.
+- These are forecast metrics only. They say nothing yet about the performance of optimized portfolios.
+
+## 11. Known limitations
 
 - **Overlapping labels:** 20-day forward returns on consecutive days overlap, so daily metric observations are autocorrelated. The IC standard error in the evaluation report is computed naively and is therefore too small. No significance tests are reported yet.
 - **Survivorship bias:** evaluating on today's index constituents over past dates favors stocks that survived into the index. The universe file records the date of its constituent list (`as_of`).
 - **One calendar:** splits use the union of dates in the panel and assume all tickers trade on the NSE calendar.
+- **Symbol history from yfinance:** some current symbols carry predecessor history. `TMPV` (Tata Motors passenger vehicles, demerged in 2025) returns prices back to 2019, i.e. the pre-demerger Tata Motors series. `ETERNAL` (renamed from Zomato) starts at the 2021 listing. `JIOFIN` starts at its 2023 listing. Pre-event history under a new symbol, and any unadjusted demerger jump, can distort features and labels for those tickers.
+- **The universe is fixed at its retrieval date:** the same 50 names are used for every past date (see survivorship bias above).
 - **Recursive smoothers depend on the series start** (section 3). `MIN_FEATURE_HISTORY` = 252 makes this negligible for panel rows, at the cost of the first year of each ticker's history.

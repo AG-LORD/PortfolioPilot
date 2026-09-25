@@ -201,3 +201,41 @@ def test_saved_recommendations_other_users_portfolio_is_404(db_session, test_por
         )
     assert list_exc.value.status_code == 404
     assert detail_exc.value.detail == "Portfolio not found"
+
+
+def test_recommendation_response_exposes_every_field_the_frontend_needs():
+    schema = RecommendationRead.model_json_schema()
+    top_level = set(schema["properties"])
+    assert {
+        "capital",
+        "allocations",
+        "cash_weight",
+        "cash_amount",
+        "expected_portfolio_return",
+        "expected_portfolio_volatility",
+        "return_model",
+        "model_version",
+        "forecast_as_of",
+        "excluded",
+        "constraints",
+        "universe",
+        "universe_as_of",
+    } <= top_level
+    allocation = schema["$defs"]["RecommendedAllocationItem"]
+    assert set(allocation["required"]) == {
+        "ticker",
+        "expected_return",
+        "target_weight",
+        "amount",
+        "at_position_limit",
+        "source",
+    }
+    assert allocation["properties"]["source"]["enum"] == ["historical", "ml"]
+
+
+def test_recommendation_request_accepts_both_return_models():
+    from app.schemas.recommendation import RecommendationRequest
+
+    schema = RecommendationRequest.model_json_schema()
+    assert schema["properties"]["return_model"]["enum"] == ["historical", "ml"]
+    assert schema["properties"]["return_model"]["default"] == "historical"

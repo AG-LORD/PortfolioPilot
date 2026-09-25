@@ -4,6 +4,7 @@ Named universes are loaded from JSON files in app/data/. Tickers are bare
 NSE symbols (market_data appends the ".NS" suffix itself).
 """
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date
@@ -24,6 +25,14 @@ class Universe(NamedTuple):
     name: str
     as_of: date | None
     tickers: list[str]
+
+    @property
+    def revision(self) -> str:
+        """Deterministic id of this exact constituent list, for reproducible
+        research: "<name>@<as_of>:<first 12 hex of sha256(name, as_of, tickers)>"."""
+        as_of = self.as_of.isoformat() if self.as_of else None
+        digest = hashlib.sha256(json.dumps([self.name, as_of, self.tickers]).encode("utf-8"))
+        return f"{self.name}@{as_of}:{digest.hexdigest()[:12]}"
 
 
 @dataclass

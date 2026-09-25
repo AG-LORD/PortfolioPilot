@@ -347,3 +347,24 @@ def test_optimize_route_cash_aware_three_holdings(db_session, test_portfolio):
     for h in holdings:
         db_session.delete(h)
     db_session.commit()
+
+
+def test_rounding_never_makes_cash_weight_negative():
+    from app.services.optimization import _finalize_weights
+
+    # Six weights of 1/6 round to 0.166667 each, summing to 1.000002 before the fix.
+    tickers = [f"T{i}" for i in range(6)]
+    result = _finalize_weights(tickers, [1 / 6] * 6, [0.1] * 6)
+    weights = [a.target_weight for a in result.allocations]
+    assert result.cash_weight == Decimal("0")
+    assert sum(weights) + result.cash_weight == Decimal("1")
+    assert all(w >= 0 for w in weights)
+    assert max(weights) - min(weights) <= Decimal("0.000002")
+
+
+def test_rounding_leaves_underinvested_weights_untouched():
+    from app.services.optimization import _finalize_weights
+
+    result = _finalize_weights(["A", "B"], [0.1, 0.05], [0.1, 0.05])
+    assert [a.target_weight for a in result.allocations] == [Decimal("0.1"), Decimal("0.05")]
+    assert result.cash_weight == Decimal("0.85")

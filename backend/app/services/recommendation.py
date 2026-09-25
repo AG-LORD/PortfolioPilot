@@ -28,6 +28,13 @@ from app.services.optimization import (
     optimize_target_weights,
 )
 from app.services.portfolios import get_portfolio
+from app.services.return_providers import (
+    HISTORICAL,
+    ML,
+    ExpectedReturnProvider,
+    HistoricalMeanProvider,
+    MLForecastProvider,
+)
 from app.services.universe import CUSTOM_UNIVERSE, get_universe, normalize_tickers
 
 AMOUNT_QUANTUM = Decimal("0.01")
@@ -43,6 +50,7 @@ class RecommendedAllocation:
     target_weight: Decimal
     amount: Decimal
     at_position_limit: bool
+    source: str = HISTORICAL  # which provider produced expected_return
 
 
 @dataclass
@@ -74,6 +82,8 @@ class Recommendation:
     expected_portfolio_volatility: Decimal
     constraints: RecommendationConstraints
     excluded: list[ExcludedTicker]
+    model_version: str | None = None
+    forecast_as_of: date | None = None
 
 
 def size_allocation(
@@ -82,8 +92,12 @@ def size_allocation(
     covariance: list[list[Decimal]],
     capital: Decimal,
     max_position_weight: Decimal,
+    sources: dict[str, str] | None = None,
 ) -> SizedAllocation:
-    """Zero-weight tickers are omitted from the returned allocations."""
+    """Zero-weight tickers are omitted from the returned allocations.
+    `sources` maps a ticker to the provider of its expected return
+    (default: historical)."""
+    sources = sources or {}
     capital = capital.quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN)
     w = np.array([float(a.target_weight) for a in target.allocations])
     mu = np.array([float(r) for r in expected_returns])
@@ -99,6 +113,7 @@ def size_allocation(
             target_weight=a.target_weight,
             amount=(a.target_weight * capital).quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN),
             at_position_limit=abs(a.target_weight - max_position_weight) <= POSITION_LIMIT_TOLERANCE,
+            source=sources.get(a.ticker, HISTORICAL),
         )
         for a in target.allocations
         if a.target_weight != 0
@@ -125,8 +140,11 @@ def get_portfolio_recommendation(
     *,
     universe: str | None = None,
     tickers: list[str] | None = None,
-    return_model: str = "historical",
+    return_model: str = HISTORICAL,
 ) -> Recommendation:
+    """return_model picks the expected-return provider. The response reports
+    the model actually used: "ml" if at least one ticker got an ML forecast,
+    otherwise "historical" (every ticker fell back)."""
     portfolio = get_portfolio(db, user_id, portfolio_id)
     risk_profile = db.get(RiskProfile, portfolio.risk_profile_id)
     if risk_profile is None:
@@ -137,7 +155,8 @@ def get_portfolio_recommendation(
     else:
         universe_name, as_of, candidates = CUSTOM_UNIVERSE, None, normalize_tickers(tickers or [])
 
-    data = get_expected_returns_for_universe(db, candidates)
+    provider: ExpectedReturnProvider = MLForecastProvider() if return_model == ML else HistoricalMeanProvider()
+    data = get_expected_returns_for_universe(db, candidates, provider)
     target = optimize_target_weights(
         tickers=data.inputs.tickers,
         expected_returns=data.inputs.expected_returns,
@@ -152,12 +171,16 @@ def get_portfolio_recommendation(
         data.inputs.covariance,
         portfolio.cash_balance,
         risk_profile.max_position_weight,
+        sources=data.sources,
     )
+    used_ml = ML in data.sources.values()
 
     return Recommendation(
         universe=universe_name,
         universe_as_of=as_of,
-        return_model=return_model,
+        return_model=ML if used_ml else HISTORICAL,
+        model_version=data.model_version if used_ml else None,
+        forecast_as_of=data.forecast_as_of if used_ml else None,
         capital=sized.capital,
         allocations=sized.allocations,
         cash_weight=sized.cash_weight,

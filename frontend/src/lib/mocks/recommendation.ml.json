@@ -15,14 +15,16 @@
       "expected_return": "0.222222",
       "target_weight": "0.1",
       "amount": "10000.00",
-      "at_position_limit": true
+      "at_position_limit": true,
+      "source": "ml"
     },
     {
       "ticker": "MOCK_DELTA",
       "expected_return": "0.111111",
       "target_weight": "0.08",
       "amount": "8000.00",
-      "at_position_limit": false
+      "at_position_limit": false,
+      "source": "historical"
     }
   ],
   "cash_weight": "0.82",

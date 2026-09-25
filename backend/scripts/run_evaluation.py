@@ -38,7 +38,13 @@ from app.services.features import (
 )
 from app.services.market_calendar import MARKET_TIMEZONE, last_completed_trading_day
 from app.services.market_data import MarketDataUnavailableError
-from app.services.universe import CUSTOM_UNIVERSE, UniverseError, get_universe, normalize_tickers
+from app.services.universe import (
+    CUSTOM_UNIVERSE,
+    Universe,
+    UniverseError,
+    get_universe,
+    normalize_tickers,
+)
 
 DEFAULT_START = date(2019, 1, 1)
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
@@ -70,11 +76,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resolve_tickers(args: argparse.Namespace) -> tuple[str, list[str]]:
+def resolve_tickers(args: argparse.Namespace) -> Universe:
     if args.universe:
-        universe = get_universe(args.universe)
-        return universe.name, universe.tickers
-    return CUSTOM_UNIVERSE, normalize_tickers(args.tickers.split(","))
+        return get_universe(args.universe)
+    return Universe(CUSTOM_UNIVERSE, None, normalize_tickers(args.tickers.split(",")))
 
 
 def load_panel_in_memory(tickers: list[str], start: date, end: date, horizon: int) -> FeaturePanel:
@@ -103,7 +108,8 @@ def _date_range(dates) -> list[str] | None:
 
 def run(args: argparse.Namespace) -> dict:
     end = args.end or last_completed_trading_day(datetime.now(MARKET_TIMEZONE))
-    universe, tickers = resolve_tickers(args)
+    universe = resolve_tickers(args)
+    tickers = universe.tickers
     loader = load_panel_in_memory if args.no_cache else load_panel_from_cache
     feature_panel = loader(tickers, args.start, end + timedelta(days=1), args.horizon)
 
@@ -116,7 +122,9 @@ def run(args: argparse.Namespace) -> dict:
     report = {
         "generated_at": datetime.now(MARKET_TIMEZONE).isoformat(timespec="seconds"),
         "settings": {
-            "universe": universe,
+            "universe": universe.name,
+            "universe_as_of": universe.as_of.isoformat() if universe.as_of else None,
+            "universe_revision": universe.revision,
             "start": args.start.isoformat(),
             "end": end.isoformat(),
             "blocks": args.blocks,

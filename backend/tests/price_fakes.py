@@ -10,7 +10,7 @@ from app.services.market_data import PricePoint
 TEST_TICKER_PREFIX = "ZZTEST_"
 
 
-def make_series(seed, n_days=250, end=None, drift=0.0008, vol=0.015, weekdays_only=False):
+def make_series(seed, n_days=400, end=None, drift=0.0008, vol=0.015, weekdays_only=False):
     """Synthetic daily OHLCV ending at `end` (default: 2 days ago), full float
     precision like market_data produces."""
     end = end or date.today() - timedelta(days=2)

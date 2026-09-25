@@ -123,6 +123,10 @@ def optimize_target_weights(
             "(max position weight, max sector weight, target volatility)."
         )
 
+    return _finalize_weights(tickers, asset_weights, mu)
+
+
+def _finalize_weights(tickers: list[str], asset_weights, mu) -> TargetAllocationResult:
     allocations = [
         TargetWeight(
             ticker=ticker,
@@ -131,9 +135,16 @@ def optimize_target_weights(
         )
         for i, (ticker, weight) in enumerate(zip(tickers, asset_weights))
     ]
+    # Rounding each weight to 6 dp can push a fully invested total just above
+    # 1; take the excess (at most a few 1e-6) off the largest weight so cash
+    # is never negative.
+    allocated = sum((w.target_weight for w in allocations), Decimal("0"))
+    if allocated > 1:
+        largest = max(allocations, key=lambda w: w.target_weight)
+        largest.target_weight -= allocated - 1
+        allocated = Decimal("1")
     # cash_weight is the exact complement of the rounded allocations, not an
     # independently-rounded solver output — guarantees allocations+cash==1.
-    allocated = sum(w.target_weight for w in allocations)
     cash_weight = Decimal("1") - allocated
 
     return TargetAllocationResult(allocations=allocations, cash_weight=cash_weight)

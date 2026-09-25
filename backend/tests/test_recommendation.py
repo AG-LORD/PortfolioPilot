@@ -104,7 +104,7 @@ def test_universe_returns_excludes_missing_and_short_history(db_session, fake_ma
     reasons = {e.ticker: e.reason for e in result.excluded}
     assert reasons == {
         "ZZTEST_MISSING": "no historical data returned",
-        "ZZTEST_SHORT": "only 10 trading day(s) of history; at least 31 are needed",
+        "ZZTEST_SHORT": "only 10 trading day(s) of history; at least 253 are needed",
     }
 
 
@@ -122,17 +122,16 @@ def test_universe_returns_all_ineligible_raises(db_session, fake_market):
         get_expected_returns_for_universe(db_session, ["ZZTEST_MISSING", "ZZTEST_SHORT"])
 
 
-@pytest.mark.db
-def test_universe_returns_insufficient_common_dates_raises(db_session, fake_market):
+def test_insufficient_common_dates_raises():
     # Each ticker alone has enough history, but their overlap is too short.
-    n = MIN_HISTORY_OBSERVATIONS + 10
-    end = date.today() - timedelta(days=2)
-    fake_market.series = {
+    n = 300
+    end = date(2025, 12, 31)
+    series = {
         "ZZTEST_A": make_series(1, n_days=n, end=end),
-        "ZZTEST_B": make_series(2, n_days=n, end=end - timedelta(days=n - 15)),
+        "ZZTEST_B": make_series(2, n_days=n, end=end - timedelta(days=n - (MIN_HISTORY_OBSERVATIONS - 15))),
     }
     with pytest.raises(InsufficientHistoryError):
-        get_expected_returns_for_universe(db_session, ["ZZTEST_A", "ZZTEST_B"])
+        _estimate_from_price_series(["ZZTEST_A", "ZZTEST_B"], series)
 
 
 @pytest.mark.db
@@ -216,8 +215,9 @@ def test_request_requires_exactly_one_source():
     with pytest.raises(ValidationError):
         RecommendationRequest(universe="NIFTY50", tickers=["AAA"])
     with pytest.raises(ValidationError):
-        RecommendationRequest(universe="NIFTY50", return_model="ml")
+        RecommendationRequest(universe="NIFTY50", return_model="neural_net")
     assert RecommendationRequest(tickers=["AAA"]).return_model == "historical"
+    assert RecommendationRequest(universe="NIFTY50", return_model="ml").return_model == "ml"
 
 
 # --- API route (DB-backed) --------------------------------------------------------
@@ -350,6 +350,150 @@ def test_recommendation_does_not_mutate_portfolio_state(db_session, test_portfol
         db_session.query(Transaction).filter(Transaction.portfolio_id == portfolio.id).count()
         == before_txns
     )
+
+    db_session.query(Holding).filter(Holding.id == holding.id).delete()
+    db_session.commit()
+
+
+# --- return_model: ml ------------------------------------------------------------
+
+
+def _long_universe_series(n_days=900):
+    return {t: make_series(seed=i, n_days=n_days) for i, t in enumerate(PLACEHOLDER_UNIVERSE)}
+
+
+@pytest.mark.db
+def test_recommendation_ml_mode_uses_ml_forecasts_and_reports_metadata(db_session, test_portfolio, fake_market):
+    from app.api.portfolios import create_portfolio_recommendation
+    from app.services.recommendation import get_portfolio_recommendation
+    from app.services.return_providers import ML, ML_MODEL_VERSION
+
+    user_id, portfolio = test_portfolio
+    fake_market.series = _long_universe_series()
+    last_date = fake_market.series["ZZTEST_A"][-1].date
+
+    response = create_portfolio_recommendation(
+        portfolio_id=portfolio.id,
+        data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE, return_model="ml"),
+        user_id=user_id,
+        db=db_session,
+    )
+    assert response.return_model == "ml"
+    assert response.model_version == ML_MODEL_VERSION
+    assert response.forecast_as_of == last_date
+    assert response.id is None and response.created_at is None
+    assert [a.source for a in response.allocations] == ["ml"] * len(response.allocations)
+    assert sum(a.amount for a in response.allocations) + response.cash_amount == response.capital
+    assert sum(a.target_weight for a in response.allocations) + response.cash_weight == Decimal("1")
+    for a in response.allocations:
+        assert a.target_weight <= response.constraints.max_position_weight + Decimal("0.001")
+
+    recommendation = get_portfolio_recommendation(
+        db_session, user_id, portfolio.id, tickers=PLACEHOLDER_UNIVERSE, return_model="ml"
+    )
+    assert all(a.source == ML for a in recommendation.allocations)
+
+
+@pytest.mark.db
+def test_ml_mode_falls_back_to_historical_per_ticker(db_session, fake_market):
+    from app.services.return_providers import HISTORICAL, ML, HistoricalMeanProvider, MLForecastProvider
+
+    series = _long_universe_series()
+    series["ZZTEST_STALE"] = make_series(9, n_days=900, end=date.today() - timedelta(days=20))
+    fake_market.series = series
+    tickers = [*PLACEHOLDER_UNIVERSE, "ZZTEST_STALE"]
+
+    ml = get_expected_returns_for_universe(db_session, tickers, MLForecastProvider())
+    historical = get_expected_returns_for_universe(db_session, tickers, HistoricalMeanProvider())
+
+    assert ml.sources["ZZTEST_STALE"] == HISTORICAL
+    assert all(ml.sources[t] == ML for t in PLACEHOLDER_UNIVERSE)
+    stale_ml = ml.inputs.expected_returns[ml.inputs.tickers.index("ZZTEST_STALE")]
+    stale_hist = historical.inputs.expected_returns[historical.inputs.tickers.index("ZZTEST_STALE")]
+    assert stale_ml == stale_hist
+    assert ml.inputs.covariance == historical.inputs.covariance  # covariance never depends on the provider
+
+
+@pytest.mark.db
+def test_ml_mode_with_too_little_history_reports_historical(db_session, test_portfolio, fake_market):
+    from app.api.portfolios import create_portfolio_recommendation
+
+    user_id, portfolio = test_portfolio
+    # 300 rows: enough for historical (253), but only ~140 labelled rows (< MIN_TRAINING_ROWS).
+    fake_market.series = {t: make_series(seed=i, n_days=300) for i, t in enumerate(PLACEHOLDER_UNIVERSE)}
+
+    response = create_portfolio_recommendation(
+        portfolio_id=portfolio.id,
+        data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE, return_model="ml"),
+        user_id=user_id,
+        db=db_session,
+    )
+    assert response.return_model == "historical"
+    assert (response.model_version, response.forecast_as_of) == (None, None)
+
+
+@pytest.mark.db
+def test_historical_mode_is_backward_compatible(db_session, test_portfolio, fake_market):
+    from app.api.portfolios import create_portfolio_recommendation
+    from app.services.return_providers import annualized_historical_mean
+
+    user_id, portfolio = test_portfolio
+    fake_market.series = _good_universe_series()
+
+    response = create_portfolio_recommendation(
+        portfolio_id=portfolio.id,
+        data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE),
+        user_id=user_id,
+        db=db_session,
+    )
+    assert response.return_model == "historical"
+    assert (response.model_version, response.forecast_as_of) == (None, None)
+    for a in response.allocations:
+        expected = annualized_historical_mean(fake_market.series[a.ticker])
+        assert a.expected_return == Decimal(str(round(float(expected), 6)))
+
+
+@pytest.mark.db
+def test_ml_mode_other_users_portfolio_is_404_before_any_fetch(db_session, test_portfolio, fake_market):
+    from app.api.portfolios import create_portfolio_recommendation
+
+    _, portfolio = test_portfolio
+    with pytest.raises(HTTPException) as exc_info:
+        create_portfolio_recommendation(
+            portfolio_id=portfolio.id,
+            data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE, return_model="ml"),
+            user_id=uuid4(),
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 404
+    assert fake_market.calls == []
+
+
+@pytest.mark.db
+def test_ml_mode_does_not_mutate_portfolio_state(db_session, test_portfolio, fake_market):
+    from app.api.portfolios import create_portfolio_recommendation
+
+    user_id, portfolio = test_portfolio
+    holding = Holding(
+        portfolio_id=portfolio.id, ticker="ZZTEST_A", quantity=Decimal("3"), average_cost=Decimal("50")
+    )
+    db_session.add(holding)
+    db_session.commit()
+    before_cash = db_session.get(Portfolio, portfolio.id).cash_balance
+
+    fake_market.series = _long_universe_series()
+    create_portfolio_recommendation(
+        portfolio_id=portfolio.id,
+        data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE, return_model="ml"),
+        user_id=user_id,
+        db=db_session,
+    )
+
+    db_session.expire_all()
+    assert db_session.get(Portfolio, portfolio.id).cash_balance == before_cash
+    assert db_session.query(Holding).filter(Holding.portfolio_id == portfolio.id).count() == 1
+    assert db_session.get(Holding, holding.id).quantity == Decimal("3")
+    assert db_session.query(Transaction).filter(Transaction.portfolio_id == portfolio.id).count() == 0
 
     db_session.query(Holding).filter(Holding.id == holding.id).delete()
     db_session.commit()

@@ -45,65 +45,79 @@ Works for portfolios with no holdings.
 **Request**: exactly one of `universe` or `tickers`.
 
 ```json
-{ "universe": "NIFTY50", "return_model": "historical" }
+{ "universe": "NIFTY50", "return_model": "ml" }
 ```
 ```json
 { "tickers": ["RELIANCE", "TCS", "INFY"], "return_model": "historical" }
 ```
 
-- `universe`: a named universe (see `GET /universes`).
+- `universe`: a named universe (see `GET /universes`). `NIFTY50` is the official NSE Indices constituent list retrieved 2026-09-25 (`backend/app/data/nifty50.json`).
 - `tickers`: bare NSE symbols (no `.NS`). They are uppercased, trimmed and de-duplicated. At most 100.
-- `return_model`: only `"historical"` is accepted for now (optional, default).
+- `return_model`: `"historical"` (default) or `"ml"`. Any other value is a 422.
 
 **Method**
-- About 365 days of adjusted daily closes per ticker. Tickers with no data or fewer than 31 trading days of history are excluded and listed in `excluded` with a reason.
-- Remaining tickers are aligned on common dates (at least 31 overlapping days required).
-- Expected returns are historical mean daily return × 252. Covariance is Ledoit-Wolf, annualized × 252.
-- Weights come from the existing cash-aware optimizer using the risk profile's `max_position_weight` and `target_volatility`.
+- Adjusted daily prices come through the price cache (`daily_prices`); only missing dates are fetched from yfinance. The history loaded is 420 calendar days for `historical` and 6 × 365 calendar days for `ml`.
+- A ticker needs at least 253 trading days of prices (252 daily returns). Tickers with no data or less history are excluded and listed in `excluded` with a reason.
+- **historical:** each ticker's expected return is 252 × the mean of its last 252 daily returns. That is the same definition as the ML evaluation baseline, in annual units.
+- **ml:** a HistGradientBoosting model is trained on the point-in-time feature panel using every row whose 20-day label is already known. It predicts each ticker's latest feature row, and the 20-trading-day forecast is converted to annual units as `forecast × 252 / 20`. A ticker with no feature row on the latest date falls back to its historical estimate, and its `source` is `"historical"`. Training happens on each request; nothing is persisted.
+- Covariance is the same for both models: Ledoit-Wolf on daily returns over the dates common to all eligible tickers, limited to the last 252 of them (at least 30 required), annualized × 252.
+- Weights come from the existing cash-aware optimizer. It maximizes expected return subject to the risk profile's `max_position_weight` and `target_volatility`, and the rest stays in cash.
 - `capital` is `cash_balance` rounded down to 0.01. `cash_balance` is stored with 4 decimals, so any sub-paisa remainder (less than ₹0.01) is left unallocated and not reported.
 - `amount = target_weight × capital`, rounded down to 0.01. `cash_amount` is the exact remainder, so amounts + `cash_amount` = `capital`, all with 2 decimals.
 - `at_position_limit` is true when `target_weight` equals `max_position_weight` within 0.0001.
-- Prices are read through the daily price cache (`daily_prices`), and only missing dates are fetched from yfinance.
 - Tickers with a zero target weight are omitted from `allocations`.
 
-**Response 200** (`RecommendationRead`)
+**Response 200** (`RecommendationRead`). Shape only; `<…>` marks values.
 
 ```json
 {
   "id": null,
   "created_at": null,
-  "portfolio_id": "3f2a1c9e-0000-4000-8000-000000000001",
-  "universe": "custom",
-  "universe_as_of": null,
-  "return_model": "historical",
-  "model_version": null,
-  "forecast_as_of": null,
-  "capital": "100000.00",
+  "portfolio_id": "<uuid>",
+  "universe": "NIFTY50",
+  "universe_as_of": "2026-09-25",
+  "return_model": "ml",
+  "model_version": "hist_gradient_boosting-h20-f12-v1",
+  "forecast_as_of": "<date of the latest price used>",
+  "capital": "<decimal, 2 dp>",
   "allocations": [
-    { "ticker": "RELIANCE", "expected_return": "0.197665", "target_weight": "0.1", "amount": "10000.00", "at_position_limit": true },
-    { "ticker": "INFY", "expected_return": "0.144422", "target_weight": "0.1", "amount": "10000.00", "at_position_limit": true },
-    { "ticker": "HDFCBANK", "expected_return": "0.22987", "target_weight": "0.1", "amount": "10000.00", "at_position_limit": true }
+    {
+      "ticker": "<symbol>",
+      "expected_return": "<annualized decimal>",
+      "target_weight": "<decimal, 6 dp>",
+      "amount": "<decimal, 2 dp>",
+      "at_position_limit": true,
+      "source": "ml"
+    }
   ],
-  "cash_weight": "0.7",
-  "cash_amount": "70000.00",
-  "expected_portfolio_return": "0.057196",
-  "expected_portfolio_volatility": "0.040847",
-  "constraints": { "max_position_weight": "0.10", "target_volatility": "0.15" },
+  "cash_weight": "<decimal>",
+  "cash_amount": "<decimal, 2 dp>",
+  "expected_portfolio_return": "<annualized decimal>",
+  "expected_portfolio_volatility": "<annualized decimal>",
+  "constraints": { "max_position_weight": "<decimal>", "target_volatility": "<decimal>" },
   "excluded": [
-    { "ticker": "NEWIPO", "reason": "only 12 trading day(s) of history; at least 31 are needed" },
-    { "ticker": "DELISTED", "reason": "no historical data returned" }
+    { "ticker": "<symbol>", "reason": "only 120 trading day(s) of history; at least 253 are needed" }
   ]
 }
 ```
 
 - `universe` is the universe name, or `"custom"` for an explicit ticker list. `universe_as_of` is the date of the constituent list, or `null` for a custom list.
-- `return_model` is `"historical"` or `"ml"`. Only `"historical"` is produced today.
-- `model_version` and `forecast_as_of` are reserved for ML results; always `null` today.
+- `return_model` is the model actually used. It is `"ml"` if at least one ticker got an ML forecast, and `"historical"` otherwise, including when `ml` was requested but no ML forecast could be made (for example, too little history to train on).
+- `source` (per allocation) is `"ml"` or `"historical"`. In `ml` mode, `"historical"` marks a ticker that fell back.
+- `model_version` and `forecast_as_of` are set only when `return_model` is `"ml"`. `model_version` is a fixed identifier (model, horizon, feature count, version), not a training timestamp.
+- `expected_portfolio_return` is Σ weight × expected_return. `expected_portfolio_volatility` is √(wᵀΣw) from the covariance above. Both are annualized estimates, not realized results.
 - `id` and `created_at` are reserved for saved recommendations; always `null` from this endpoint today.
 
 **Errors**
-- `404`: portfolio not found or not owned by the caller.
-- `422`: invalid body (both or neither of `universe`/`tickers`, unsupported `return_model`), unknown or unconfigured universe, no eligible tickers, too few overlapping trading days, or infeasible risk-profile constraints.
+- `401`: missing, invalid or expired token.
+- `404`: portfolio not found or not owned by the caller. This is checked before any market data is fetched.
+- `422`:
+  - invalid body: both or neither of `universe`/`tickers`, an unsupported `return_model`, or an empty or too-long ticker list
+  - unknown or unconfigured universe
+  - no eligible tickers
+  - fewer than 31 overlapping trading days across tickers
+  - infeasible risk-profile constraints
+- `503` is not used by this endpoint. A failed market-data download shows up as excluded tickers with the reason `history request failed: …`.
 
 ## GET /portfolios/{portfolio_id}/recommendations
 
@@ -169,7 +183,7 @@ supplied yet is listed with `configured: false`, `as_of: null` and no tickers.
 
 ```json
 [
-  { "name": "NIFTY50", "as_of": null, "tickers": [], "configured": false }
+  { "name": "NIFTY50", "as_of": "2026-09-25", "tickers": ["ADANIENT", "ADANIPORTS", "…"], "configured": true }
 ]
 ```
 

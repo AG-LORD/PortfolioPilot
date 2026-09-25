@@ -5,15 +5,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, model_validator
 
-# The request only accepts "historical" for now; responses can also carry
-# "ml" so ML-backed results fit the same contract later.
 ResponseReturnModel = Literal["historical", "ml"]
 
 
 class RecommendationRequest(BaseModel):
     universe: str | None = None
     tickers: list[str] | None = None
-    return_model: Literal["historical"] = "historical"
+    return_model: Literal["historical", "ml"] = "historical"
 
     @model_validator(mode="after")
     def _exactly_one_source(self):
@@ -28,6 +26,9 @@ class RecommendedAllocationItem(BaseModel):
     target_weight: Decimal
     amount: Decimal
     at_position_limit: bool
+    # Provider of this ticker's expected_return; "historical" in ml mode means
+    # this ticker fell back because it had no usable ML forecast.
+    source: ResponseReturnModel
 
 
 class ExcludedTickerItem(BaseModel):

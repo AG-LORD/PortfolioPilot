@@ -1,14 +1,18 @@
-"""Historical expected-return/covariance inputs for portfolio optimization.
+"""Expected-return/covariance inputs for portfolio optimization.
 
-Uses market_data's canonical adjusted-price history, read through the
-price_history cache. Annualized with the
-same ANNUALIZATION_FACTOR (252) convention used elsewhere in risk analytics.
-Ledoit-Wolf shrinkage (sklearn) is used for the covariance estimate, a
-standard, more stable alternative to a raw sample covariance on limited
-history.
+Prices come from market_data's canonical adjusted history, read through the
+price_history cache.
+
+- Expected returns come from an ExpectedReturnProvider (return_providers.py).
+  All providers use the annualized arithmetic convention (mean daily
+  return x 252). The default is the historical mean over each ticker's last
+  252 daily returns, the same definition as the evaluation baseline.
+- Covariance: Ledoit-Wolf shrinkage on daily returns over the dates common to
+  all tickers, restricted to the same trailing 252-return window, annualized
+  x 252. It is the same for every provider.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -16,11 +20,17 @@ import numpy as np
 from sklearn.covariance import LedoitWolf
 from sqlalchemy.orm import Session
 
+from app.ml.baseline import BASELINE_LOOKBACK
 from app.services import market_data, price_history
-from app.services.risk_analytics import ANNUALIZATION_FACTOR
+from app.services.market_calendar import ANNUALIZATION_FACTOR
+from app.services.return_providers import (
+    MIN_PRICE_ROWS,
+    ExpectedReturnProvider,
+    HistoricalMeanProvider,
+)
 from app.services.universe import ExcludedTicker
 
-LOOKBACK_DAYS = 365
+# Minimum overlapping daily returns across all tickers for the covariance.
 MIN_HISTORY_OBSERVATIONS = 30
 
 
@@ -41,21 +51,28 @@ class ExpectedReturnsInput:
 class UniverseReturnsInput:
     inputs: ExpectedReturnsInput
     excluded: list[ExcludedTicker]
+    sources: dict[str, str] = field(default_factory=dict)
+    model_version: str | None = None
+    forecast_as_of: date | None = None
 
 
-def _history_window() -> tuple[date, date]:
+def _history_window(calendar_days: int) -> tuple[date, date]:
     end = date.today()
-    return end - timedelta(days=LOOKBACK_DAYS), end
+    return end - timedelta(days=calendar_days), end
 
 
-def _estimate_from_price_series(
+def _short_history_reason(rows: int) -> str:
+    return f"only {rows} trading day(s) of history; at least {MIN_PRICE_ROWS} are needed"
+
+
+def ledoit_wolf_covariance(
     tickers: list[str], price_series: dict[str, list[market_data.PricePoint]]
-) -> ExpectedReturnsInput:
+) -> list[list[Decimal]]:
     # Align on dates common to every ticker so the return/covariance matrix
     # is well-defined (simplest safe approach; no forward-fill/interpolation).
     common_dates = None
-    for points in price_series.values():
-        dates = {p.date for p in points}
+    for ticker in tickers:
+        dates = {p.date for p in price_series[ticker]}
         common_dates = dates if common_dates is None else common_dates & dates
     common_dates = sorted(common_dates) if common_dates else []
 
@@ -66,9 +83,7 @@ def _estimate_from_price_series(
             "are needed."
         )
 
-    closes_by_ticker = {
-        ticker: {p.date: p.close for p in points} for ticker, points in price_series.items()
-    }
+    closes_by_ticker = {ticker: {p.date: p.close for p in price_series[ticker]} for ticker in tickers}
 
     returns_matrix = []
     for i in range(1, len(common_dates)):
@@ -80,23 +95,35 @@ def _estimate_from_price_series(
             row.append(0.0 if prev_close == 0 else float((curr_close - prev_close) / prev_close))
         returns_matrix.append(row)
 
-    returns_array = np.array(returns_matrix)  # (n_obs, n_tickers)
-
-    mean_daily = returns_array.mean(axis=0)
-    expected_returns = [Decimal(str(m * ANNUALIZATION_FACTOR)) for m in mean_daily]
-
+    returns_array = np.array(returns_matrix)[-BASELINE_LOOKBACK:]  # (n_obs, n_tickers)
     shrunk = LedoitWolf().fit(returns_array)
     annualized_cov = shrunk.covariance_ * ANNUALIZATION_FACTOR
-    covariance = [[Decimal(str(v)) for v in row] for row in annualized_cov]
+    return [[Decimal(str(v)) for v in row] for row in annualized_cov]
 
-    return ExpectedReturnsInput(tickers=tickers, expected_returns=expected_returns, covariance=covariance)
+
+def _estimate_from_price_series(
+    tickers: list[str], price_series: dict[str, list[market_data.PricePoint]]
+) -> ExpectedReturnsInput:
+    """Historical-mean expected returns plus covariance; every ticker must
+    have at least MIN_PRICE_ROWS prices."""
+    for ticker in tickers:
+        rows = len(price_series[ticker])
+        if rows < MIN_PRICE_ROWS:
+            raise InsufficientHistoryError(f"{ticker} has {_short_history_reason(rows)}.")
+
+    estimates = HistoricalMeanProvider().estimate({t: price_series[t] for t in tickers})
+    return ExpectedReturnsInput(
+        tickers=tickers,
+        expected_returns=[estimates.expected_returns[t] for t in tickers],
+        covariance=ledoit_wolf_covariance(tickers, price_series),
+    )
 
 
 def get_expected_returns_and_covariance(db: Session, tickers: list[str]) -> ExpectedReturnsInput:
     if not tickers:
         raise InsufficientHistoryError("No tickers provided for optimization.")
 
-    start, end = _history_window()
+    start, end = _history_window(HistoricalMeanProvider.history_calendar_days)
     history = price_history.get_price_history(db, tickers, start, end)
 
     # A ticker with no data fails the whole request (same fail-entirely
@@ -109,13 +136,17 @@ def get_expected_returns_and_covariance(db: Session, tickers: list[str]) -> Expe
     return _estimate_from_price_series(tickers, price_series)
 
 
-def get_expected_returns_for_universe(db: Session, tickers: list[str]) -> UniverseReturnsInput:
+def get_expected_returns_for_universe(
+    db: Session, tickers: list[str], provider: ExpectedReturnProvider | None = None
+) -> UniverseReturnsInput:
     """Like get_expected_returns_and_covariance, but excludes (with a reason)
-    tickers with no data or too little history instead of failing outright."""
+    tickers with no data or too little history instead of failing outright.
+    Expected returns come from `provider` (historical mean by default)."""
     if not tickers:
         raise InsufficientHistoryError("No tickers provided for recommendation.")
+    provider = provider or HistoricalMeanProvider()
 
-    start, end = _history_window()
+    start, end = _history_window(provider.history_calendar_days)
     history = price_history.get_price_history(db, tickers, start, end)
     price_series: dict[str, list[market_data.PricePoint]] = {}
     excluded: list[ExcludedTicker] = []
@@ -125,16 +156,8 @@ def get_expected_returns_for_universe(db: Session, tickers: list[str]) -> Univer
             excluded.append(ExcludedTicker(ticker=ticker, reason=history.errors[ticker].reason))
             continue
         points = history.points[ticker]
-        if len(points) < MIN_HISTORY_OBSERVATIONS + 1:
-            excluded.append(
-                ExcludedTicker(
-                    ticker=ticker,
-                    reason=(
-                        f"only {len(points)} trading day(s) of history; at least "
-                        f"{MIN_HISTORY_OBSERVATIONS + 1} are needed"
-                    ),
-                )
-            )
+        if len(points) < MIN_PRICE_ROWS:
+            excluded.append(ExcludedTicker(ticker=ticker, reason=_short_history_reason(len(points))))
             continue
         price_series[ticker] = points
 
@@ -144,7 +167,15 @@ def get_expected_returns_for_universe(db: Session, tickers: list[str]) -> Univer
         )
 
     eligible = list(price_series)
+    estimates = provider.estimate(price_series)
     return UniverseReturnsInput(
-        inputs=_estimate_from_price_series(eligible, price_series),
+        inputs=ExpectedReturnsInput(
+            tickers=eligible,
+            expected_returns=[estimates.expected_returns[t] for t in eligible],
+            covariance=ledoit_wolf_covariance(eligible, price_series),
+        ),
         excluded=excluded,
+        sources=estimates.sources,
+        model_version=estimates.model_version,
+        forecast_as_of=estimates.forecast_as_of,
     )

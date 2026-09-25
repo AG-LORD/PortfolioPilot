@@ -15,21 +15,24 @@
       "expected_return": "0.111111",
       "target_weight": "0.1",
       "amount": "10000.00",
-      "at_position_limit": true
+      "at_position_limit": true,
+      "source": "historical"
     },
     {
       "ticker": "MOCK_BRAVO",
       "expected_return": "0.111111",
       "target_weight": "0.1",
       "amount": "10000.00",
-      "at_position_limit": true
+      "at_position_limit": true,
+      "source": "historical"
     },
     {
       "ticker": "MOCK_CHARLIE",
       "expected_return": "0.055555",
       "target_weight": "0.05",
       "amount": "5000.00",
-      "at_position_limit": false
+      "at_position_limit": false,
+      "source": "historical"
     }
   ],
   "cash_weight": "0.75",
@@ -41,7 +44,13 @@
     "target_volatility": "0.15"
   },
   "excluded": [
-    { "ticker": "MOCK_NODATA", "reason": "no historical data returned" },
-    { "ticker": "MOCK_NEWLISTING", "reason": "only 10 trading day(s) of history; at least 31 are needed" }
+    {
+      "ticker": "MOCK_NODATA",
+      "reason": "no historical data returned"
+    },
+    {
+      "ticker": "MOCK_NEWLISTING",
+      "reason": "only 10 trading day(s) of history; at least 253 are needed"
+    }
   ]
 }
