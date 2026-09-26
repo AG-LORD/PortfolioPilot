@@ -188,3 +188,59 @@ def test_invalid_portfolio_access_is_rejected(history_db):
     with pytest.raises(HTTPException) as exc_info:
         list_recommendation_snapshots(session, uuid4(), portfolio.id)
     assert exc_info.value.status_code == 404
+
+
+def test_detail_returns_persisted_clipping_and_drivers(history_db):
+    from app.services.return_providers import Driver
+
+    session, user_id, portfolio = history_db
+    recommendation = _recommendation()
+    allocation = recommendation.allocations[0]
+    allocation.clipped = True
+    allocation.drivers = [
+        Driver(feature="momentum_20", value=Decimal("0.08"), contribution=Decimal("0.031")),
+        Driver(feature="rsi_14", value=Decimal("61.2"), contribution=Decimal("-0.004")),
+    ]
+    allocation.typical_estimate = Decimal("0.095")
+    snapshot = persist_recommendation_snapshot(session, portfolio.id, recommendation)
+
+    detail = portfolio_api.read_portfolio_recommendation(
+        portfolio_id=portfolio.id, recommendation_id=snapshot.id, user_id=user_id, db=session
+    )
+
+    [item] = detail.allocations
+    assert item.clipped is True
+    assert item.typical_estimate == Decimal("0.095")
+    assert [(d.feature, d.value, d.contribution) for d in item.drivers] == [
+        ("momentum_20", Decimal("0.08"), Decimal("0.031")),
+        ("rsi_14", Decimal("61.2"), Decimal("-0.004")),
+    ]
+
+
+def test_detail_of_a_snapshot_saved_before_drivers_existed_uses_defaults(history_db):
+    session, user_id, portfolio = history_db
+    snapshot = persist_recommendation_snapshot(session, portfolio.id, _recommendation())
+    snapshot.allocations = [
+        {k: v for k, v in item.items() if k not in {"clipped", "drivers", "typical_estimate"}}
+        for item in snapshot.allocations
+    ]
+    session.commit()
+
+    detail = portfolio_api.read_portfolio_recommendation(
+        portfolio_id=portfolio.id, recommendation_id=snapshot.id, user_id=user_id, db=session
+    )
+    [item] = detail.allocations
+    assert (item.clipped, item.drivers, item.typical_estimate) == (False, [], None)
+
+
+@pytest.mark.parametrize("source", ["precomputed", "on_request", None])
+def test_detail_returns_persisted_forecast_source(history_db, source):
+    session, user_id, portfolio = history_db
+    recommendation = _recommendation()
+    recommendation.forecast_source = source
+    snapshot = persist_recommendation_snapshot(session, portfolio.id, recommendation)
+
+    detail = portfolio_api.read_portfolio_recommendation(
+        portfolio_id=portfolio.id, recommendation_id=snapshot.id, user_id=user_id, db=session
+    )
+    assert detail.forecast_source == source

@@ -25,6 +25,7 @@ from app.services import market_data, price_history
 from app.services.market_calendar import ANNUALIZATION_FACTOR
 from app.services.return_providers import (
     MIN_PRICE_ROWS,
+    Driver,
     ExpectedReturnProvider,
     HistoricalMeanProvider,
 )
@@ -54,6 +55,10 @@ class UniverseReturnsInput:
     sources: dict[str, str] = field(default_factory=dict)
     model_version: str | None = None
     forecast_as_of: date | None = None
+    clipped: dict[str, bool] = field(default_factory=dict)
+    drivers: dict[str, list[Driver]] = field(default_factory=dict)
+    typical_estimates: dict[str, Decimal] = field(default_factory=dict)
+    forecast_source: str | None = None
 
 
 def _history_window(calendar_days: int) -> tuple[date, date]:
@@ -178,4 +183,8 @@ def get_expected_returns_for_universe(
         sources=estimates.sources,
         model_version=estimates.model_version,
         forecast_as_of=estimates.forecast_as_of,
+        clipped=estimates.clipped,
+        drivers=estimates.drivers,
+        typical_estimates=estimates.typical_estimates,
+        forecast_source=estimates.forecast_source,
     )

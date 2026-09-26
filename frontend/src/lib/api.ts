@@ -1,4 +1,8 @@
+import { createClient } from "@/lib/supabase/client";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+
+const EXPECTED_ERROR_STATUSES = new Set([401, 404, 409, 422, 503]);
 
 export class ApiError extends Error {
   status: number;
@@ -46,6 +50,12 @@ function responseErrorMessage(status: number, bodyText: string): string {
   return "Request failed. Please try again.";
 }
 
+// Returns the current Supabase access token, or null when signed out.
+export async function getAccessToken(): Promise<string | null> {
+  const { data: { session } } = await createClient().auth.getSession();
+  return session?.access_token ?? null;
+}
+
 // Takes the access token as a param rather than fetching the session itself, so callers control timing.
 export async function apiFetch<T>(
   path: string,
@@ -61,16 +71,20 @@ export async function apiFetch<T>(
         Authorization: `Bearer ${accessToken}`,
       },
     });
-  } catch {
+  } catch (err) {
+    console.error(`API request could not reach the server: ${options.method ?? "GET"} ${path}`, err);
     throw new ApiError(0, "Could not reach the PortfolioPilot API. Check connectivity and try again.");
   }
 
   const bodyText = await res.text();
 
   if (!res.ok) {
-    console.error(`API request failed: ${options.method ?? "GET"} ${path}`, {
-      status: res.status,
-    });
+    // 401/404/409/422/503 are expected states the caller handles; only log unexpected failures.
+    if (!EXPECTED_ERROR_STATUSES.has(res.status)) {
+      console.error(`API request failed: ${options.method ?? "GET"} ${path}`, {
+        status: res.status,
+      });
+    }
     throw new ApiError(res.status, responseErrorMessage(res.status, bodyText));
   }
 

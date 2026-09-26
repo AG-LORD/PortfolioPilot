@@ -14,6 +14,8 @@ class OverviewTotals(BaseModel):
     market_value: Decimal | None
     total_value: Decimal | None
     unrealized_pnl: Decimal | None
+    # Portfolios included in market_value / total_value / unrealized_pnl.
+    valued_portfolio_count: int = 0
 
 
 class PortfolioOverviewItem(BaseModel):

@@ -9,7 +9,7 @@ from app.api.ml import read_model_evaluation
 from app.api.portfolios import router as portfolios_router
 from app.api.universes import read_universes
 from app.main import app
-from app.models import Holding
+from app.models import Holding, Portfolio
 from app.schemas.recommendation import RecommendationRead
 from app.services import universe as universe_module
 from app.services.optimization import optimize_target_weights
@@ -161,9 +161,14 @@ def test_portfolio_routes_hide_other_users_portfolio(db_session, test_portfolio)
 
 
 @pytest.mark.db
-def test_overview_summarizes_own_portfolios(db_session, test_portfolio):
+def test_overview_summarizes_own_portfolios(db_session, test_portfolio, monkeypatch):
     from app.api.portfolios import read_portfolios_overview
+    from app.services import market_data
 
+    def no_quote(ticker):
+        raise market_data.MarketDataUnavailableError(ticker, "no quote in tests")
+
+    monkeypatch.setattr(market_data, "get_current_price", no_quote)
     user_id, portfolio = test_portfolio
     holding = Holding(
         portfolio_id=portfolio.id, ticker="ZZTEST_A", quantity=Decimal("1"), average_cost=Decimal("1")

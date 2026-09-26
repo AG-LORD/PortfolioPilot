@@ -9,11 +9,13 @@ from decimal import Decimal
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
@@ -275,6 +277,8 @@ class RecommendationSnapshot(Base):
     return_model: Mapped[str] = mapped_column(String(20), nullable=False)
     model_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
     forecast_as_of: Mapped[calendar_date | None] = mapped_column(Date, nullable=True)
+    # "precomputed" (nightly run), "on_request", or null when no ML forecast was used.
+    forecast_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     expected_portfolio_return: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False)
     expected_portfolio_volatility: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False)
     cash_weight: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False)
@@ -413,5 +417,36 @@ class PriceCacheCoverage(Base):
     covered_end: Mapped[calendar_date] = mapped_column(Date, nullable=False)
     last_full_refresh_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class MLForecast(Base):
+    """One stored ML forecast per ticker, forecast date, horizon and model
+    version, written by the nightly job (scripts/nightly_jobs.py)."""
+
+    __tablename__ = "ml_forecasts"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker", "as_of", "horizon", "model_version", name="uq_ml_forecast_ticker_asof_horizon_version"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    as_of: Mapped[calendar_date] = mapped_column(Date, nullable=False)  # latest feature date
+    horizon: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    raw_forecast: Mapped[Decimal] = mapped_column(Numeric, nullable=False)  # horizon return, before clipping
+    annual_forecast: Mapped[Decimal] = mapped_column(Numeric, nullable=False)  # clipped, annualized
+    clipped: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    drivers: Mapped[list] = mapped_column(JSON, nullable=False)
+    typical_estimate: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
+    training_start: Mapped[calendar_date] = mapped_column(Date, nullable=False)
+    training_end: Mapped[calendar_date] = mapped_column(Date, nullable=False)
+    training_rows: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
         nullable=False,
     )

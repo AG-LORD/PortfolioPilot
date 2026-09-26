@@ -9,7 +9,10 @@ from price_fakes import make_series
 from app.ml.baseline import historical_mean_forecast
 from app.ml.models import make_model
 from app.services.features import FEATURE_COLUMNS, LABEL_COLUMN, build_panel_from_prices
+from app.services import return_providers
 from app.services.return_providers import (
+    CLIP_LOWER_Q,
+    CLIP_UPPER_Q,
     HISTORICAL,
     MIN_PRICE_ROWS,
     ML,
@@ -17,8 +20,10 @@ from app.services.return_providers import (
     ML_MODEL_VERSION,
     HistoricalMeanProvider,
     MLForecastProvider,
+    ablation_drivers,
     annualized_historical_mean,
     horizon_forecast_to_annual,
+    label_clip_bounds,
 )
 
 END = date(2025, 12, 31)
@@ -74,9 +79,12 @@ def test_ml_provider_matches_a_manual_train_and_predict():
     train = panel[panel[LABEL_COLUMN].notna()]
     latest = panel[panel["date"] == panel["date"].max()]
     predictions = make_model(ML_MODEL).fit(train[FEATURE_COLUMNS], train[LABEL_COLUMN]).predict(latest[FEATURE_COLUMNS])
+    lower, upper = np.quantile(train[LABEL_COLUMN], [CLIP_LOWER_Q, CLIP_UPPER_Q])
 
     for ticker, forecast in zip(latest["ticker"], predictions):
-        assert float(estimate.expected_returns[ticker]) == pytest.approx(forecast * 252 / 20, rel=1e-12)
+        bounded = min(max(forecast, lower), upper)
+        assert float(estimate.expected_returns[ticker]) == pytest.approx(bounded * 252 / 20, rel=1e-12)
+        assert estimate.clipped[ticker] == (bounded != forecast)
     assert estimate.sources == {t: ML for t in TICKERS}
     assert estimate.forecast_as_of == max(p.date for p in prices["ZZTEST_A"])
 
@@ -106,6 +114,10 @@ def test_ml_provider_falls_back_per_ticker_without_a_latest_feature_row():
 
     assert estimate.sources["ZZTEST_STALE"] == HISTORICAL
     assert estimate.expected_returns["ZZTEST_STALE"] == historical.expected_returns["ZZTEST_STALE"]
+    # A historical fallback has no ML diagnostics.
+    assert "ZZTEST_STALE" not in estimate.drivers
+    assert "ZZTEST_STALE" not in estimate.typical_estimates
+    assert "ZZTEST_STALE" not in estimate.clipped
     assert all(estimate.sources[t] == ML for t in TICKERS)
     assert estimate.model_version == ML_MODEL_VERSION
 
@@ -120,3 +132,129 @@ def test_ml_provider_without_enough_training_rows_is_all_historical():
 def test_ml_provider_returns_decimals():
     estimate = MLForecastProvider().estimate(_prices())
     assert all(isinstance(v, Decimal) for v in estimate.expected_returns.values())
+
+
+# --- signal control (clipping) --------------------------------------------------------
+
+
+class _ConstantModel:
+    """Stands in for the sklearn pipeline: predicts a fixed 20-day return."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def fit(self, X, y):
+        return self
+
+    def predict(self, X):
+        return np.full(len(X), self.value, dtype=float)
+
+
+def _training_labels(prices):
+    panel = build_panel_from_prices(list(prices), prices, errors={}).panel
+    finite = np.isfinite(panel[FEATURE_COLUMNS].to_numpy(dtype=float)).all(axis=1)
+    panel = panel[finite]
+    return panel.loc[panel[LABEL_COLUMN].notna(), LABEL_COLUMN]
+
+
+def test_clip_bounds_are_the_training_label_quantiles():
+    labels = pd.Series(np.linspace(-0.5, 0.5, 1001))
+    assert label_clip_bounds(labels) == pytest.approx((-0.49, 0.49))
+
+
+def test_forecast_outside_the_band_is_clipped(monkeypatch):
+    prices = _prices()
+    monkeypatch.setattr(return_providers, "make_model", lambda name: _ConstantModel(5.0))
+    estimate = MLForecastProvider().estimate(prices)
+
+    lower, upper = estimate.clip_bounds
+    assert upper < 5.0
+    for ticker in TICKERS:
+        assert estimate.clipped[ticker] is True
+        assert float(estimate.expected_returns[ticker]) == pytest.approx(upper * 252 / 20, rel=1e-12)
+
+
+def test_forecast_inside_the_band_is_unchanged(monkeypatch):
+    prices = _prices()
+    inside = float(_training_labels(prices).median())
+    monkeypatch.setattr(return_providers, "make_model", lambda name: _ConstantModel(inside))
+    estimate = MLForecastProvider().estimate(prices)
+
+    lower, upper = estimate.clip_bounds
+    assert lower < inside < upper
+    for ticker in TICKERS:
+        assert estimate.clipped[ticker] is False
+        assert float(estimate.expected_returns[ticker]) == pytest.approx(inside * 252 / 20, rel=1e-12)
+
+
+def test_clip_bounds_come_only_from_training_labels(monkeypatch):
+    prices = _prices()
+    fitted = {}
+
+    class RecordingModel(_ConstantModel):
+        def fit(self, X, y):
+            fitted["y"] = y.copy()
+            return self
+
+    monkeypatch.setattr(return_providers, "make_model", lambda name: RecordingModel(0.0))
+    estimate = MLForecastProvider().estimate(prices)
+
+    # Exactly the labels the model was fitted on: labelled rows only, never the
+    # unlabelled latest rows being forecast.
+    assert fitted["y"].notna().all()
+    assert len(fitted["y"]) == len(_training_labels(prices))
+    assert estimate.clip_bounds == pytest.approx(tuple(np.quantile(fitted["y"], [CLIP_LOWER_Q, CLIP_UPPER_Q])))
+
+
+# --- explanations (ablation drivers) ---------------------------------------------------
+
+
+class _OneFeatureModel:
+    """20-day forecast = 0.1 x momentum_20; every other feature is ignored."""
+
+    def fit(self, X, y):
+        return self
+
+    def predict(self, X):
+        return 0.1 * np.asarray(X["momentum_20"], dtype=float)
+
+
+def _feature_frame(rows):
+    return pd.DataFrame(rows, columns=FEATURE_COLUMNS, dtype=float)
+
+
+def test_ablation_only_credits_the_feature_the_model_uses():
+    medians = pd.Series(0.0, index=FEATURE_COLUMNS)
+    latest = _feature_frame([[0.2] * len(FEATURE_COLUMNS)])
+    [drivers], typical = ablation_drivers(_OneFeatureModel(), latest, medians)
+
+    assert [d.feature for d in drivers][0] == "momentum_20"
+    assert float(drivers[0].contribution) == pytest.approx(0.1 * 0.2 * 252 / 20)
+    assert all(d.contribution == 0 for d in drivers[1:])
+    assert sorted(d.feature for d in drivers) == sorted(FEATURE_COLUMNS)
+    assert typical == pytest.approx(0.0)
+
+
+def test_feature_at_its_training_median_contributes_zero():
+    medians = pd.Series(0.05, index=FEATURE_COLUMNS)
+    latest = _feature_frame([[0.05] * len(FEATURE_COLUMNS)])
+    [drivers], typical = ablation_drivers(_OneFeatureModel(), latest, medians)
+    assert all(d.contribution == 0 for d in drivers)
+    assert typical == pytest.approx(0.1 * 0.05 * 252 / 20)
+
+
+def test_drivers_are_deterministic_and_sorted_by_size():
+    prices = _prices()
+    first, second = MLForecastProvider().estimate(prices), MLForecastProvider().estimate(prices)
+    assert first.drivers == second.drivers
+    assert first.typical_estimates == second.typical_estimates
+    for ticker in TICKERS:
+        drivers = first.drivers[ticker]
+        assert len(drivers) == len(FEATURE_COLUMNS)
+        sizes = [abs(d.contribution) for d in drivers]
+        assert sizes == sorted(sizes, reverse=True)
+
+
+def test_historical_provider_has_no_drivers():
+    estimate = HistoricalMeanProvider().estimate(_prices())
+    assert (estimate.drivers, estimate.typical_estimates, estimate.clipped) == ({}, {}, {})

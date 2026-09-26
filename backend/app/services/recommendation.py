@@ -12,7 +12,7 @@ capital, all with 2 decimals.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_DOWN, Decimal
 from uuid import UUID
@@ -23,6 +23,9 @@ from sqlalchemy.orm import Session
 
 from app.models import RecommendationSnapshot, RiskProfile
 from app.services.expected_returns import ExcludedTicker, get_expected_returns_for_universe
+from app.services.features import DEFAULT_HORIZON
+from app.services.market_calendar import MARKET_TIMEZONE, latest_completed_trading_weekday
+from app.services.ml_forecasts import load_stored_forecasts
 from app.services.optimization import (
     OptimizationError,
     TargetAllocationResult,
@@ -32,7 +35,9 @@ from app.services.portfolios import get_portfolio
 from app.services.return_providers import (
     HISTORICAL,
     ML,
+    Driver,
     ExpectedReturnProvider,
+    ML_MODEL_VERSION,
     HistoricalMeanProvider,
     MLForecastProvider,
 )
@@ -52,6 +57,9 @@ class RecommendedAllocation:
     amount: Decimal
     at_position_limit: bool
     source: str = HISTORICAL  # which provider produced expected_return
+    clipped: bool = False  # ML forecast capped to the training-label range
+    drivers: list[Driver] = field(default_factory=list)  # ML tickers only
+    typical_estimate: Decimal | None = None  # ML tickers only
 
 
 @dataclass
@@ -85,6 +93,7 @@ class Recommendation:
     excluded: list[ExcludedTicker]
     model_version: str | None = None
     forecast_as_of: date | None = None
+    forecast_source: str | None = None  # "precomputed" / "on_request"; None if historical only
     id: UUID | None = None
     created_at: datetime | None = None
 
@@ -96,11 +105,18 @@ def size_allocation(
     capital: Decimal,
     max_position_weight: Decimal,
     sources: dict[str, str] | None = None,
+    clipped: dict[str, bool] | None = None,
+    drivers: dict[str, list[Driver]] | None = None,
+    typical_estimates: dict[str, Decimal] | None = None,
 ) -> SizedAllocation:
     """Zero-weight tickers are omitted from the returned allocations.
     `sources` maps a ticker to the provider of its expected return
-    (default: historical)."""
+    (default: historical); clipped/drivers/typical_estimates carry the ML
+    provider's per-ticker diagnostics (default: none)."""
     sources = sources or {}
+    clipped = clipped or {}
+    drivers = drivers or {}
+    typical_estimates = typical_estimates or {}
     capital = capital.quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN)
     w = np.array([float(a.target_weight) for a in target.allocations])
     mu = np.array([float(r) for r in expected_returns])
@@ -117,6 +133,9 @@ def size_allocation(
             amount=(a.target_weight * capital).quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN),
             at_position_limit=abs(a.target_weight - max_position_weight) <= POSITION_LIMIT_TOLERANCE,
             source=sources.get(a.ticker, HISTORICAL),
+            clipped=clipped.get(a.ticker, False),
+            drivers=list(drivers.get(a.ticker, [])),
+            typical_estimate=typical_estimates.get(a.ticker),
         )
         for a in target.allocations
         if a.target_weight != 0
@@ -134,6 +153,14 @@ def size_allocation(
 
 
 # --- orchestration (DB + market data) --------------------------------------
+
+
+def _ml_provider(db: Session, candidates: list[str]) -> MLForecastProvider:
+    """Uses the nightly forecasts for the latest completed trading day and the
+    current model version when they exist; missing tickers are forecast on request."""
+    as_of = latest_completed_trading_weekday(datetime.now(MARKET_TIMEZONE))
+    stored = load_stored_forecasts(db, candidates, as_of, ML_MODEL_VERSION, DEFAULT_HORIZON)
+    return MLForecastProvider(stored=stored, stored_as_of=as_of)
 
 
 def get_portfolio_recommendation(
@@ -158,7 +185,9 @@ def get_portfolio_recommendation(
     else:
         universe_name, as_of, candidates = CUSTOM_UNIVERSE, None, normalize_tickers(tickers or [])
 
-    provider: ExpectedReturnProvider = MLForecastProvider() if return_model == ML else HistoricalMeanProvider()
+    provider: ExpectedReturnProvider = (
+        _ml_provider(db, candidates) if return_model == ML else HistoricalMeanProvider()
+    )
     data = get_expected_returns_for_universe(db, candidates, provider)
     target = optimize_target_weights(
         tickers=data.inputs.tickers,
@@ -175,6 +204,9 @@ def get_portfolio_recommendation(
         portfolio.cash_balance,
         risk_profile.max_position_weight,
         sources=data.sources,
+        clipped=data.clipped,
+        drivers=data.drivers,
+        typical_estimates=data.typical_estimates,
     )
     used_ml = ML in data.sources.values()
 
@@ -184,6 +216,7 @@ def get_portfolio_recommendation(
         return_model=ML if used_ml else HISTORICAL,
         model_version=data.model_version if used_ml else None,
         forecast_as_of=data.forecast_as_of if used_ml else None,
+        forecast_source=data.forecast_source if used_ml else None,
         capital=sized.capital,
         allocations=sized.allocations,
         cash_weight=sized.cash_weight,
@@ -207,6 +240,7 @@ def persist_recommendation_snapshot(db: Session, portfolio_id: UUID, recommendat
         return_model=recommendation.return_model,
         model_version=recommendation.model_version,
         forecast_as_of=recommendation.forecast_as_of,
+        forecast_source=recommendation.forecast_source,
         expected_portfolio_return=recommendation.expected_portfolio_return,
         expected_portfolio_volatility=recommendation.expected_portfolio_volatility,
         cash_weight=recommendation.cash_weight,
@@ -221,6 +255,12 @@ def persist_recommendation_snapshot(db: Session, portfolio_id: UUID, recommendat
                 "amount": str(item.amount),
                 "at_position_limit": item.at_position_limit,
                 "source": item.source,
+                "clipped": item.clipped,
+                "drivers": [
+                    {"feature": d.feature, "value": str(d.value), "contribution": str(d.contribution)}
+                    for d in item.drivers
+                ],
+                "typical_estimate": None if item.typical_estimate is None else str(item.typical_estimate),
             }
             for item in recommendation.allocations
         ],
