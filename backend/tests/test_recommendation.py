@@ -381,7 +381,8 @@ def test_recommendation_ml_mode_uses_ml_forecasts_and_reports_metadata(db_sessio
     assert response.return_model == "ml"
     assert response.model_version == ML_MODEL_VERSION
     assert response.forecast_as_of == last_date
-    assert response.id is None and response.created_at is None
+    # Recommendations are persisted as snapshots, so the response carries their id and time.
+    assert response.id is not None and response.created_at is not None
     assert [a.source for a in response.allocations] == ["ml"] * len(response.allocations)
     assert sum(a.amount for a in response.allocations) + response.cash_amount == response.capital
     assert sum(a.target_weight for a in response.allocations) + response.cash_weight == Decimal("1")
@@ -565,16 +566,43 @@ def test_capital_addition_updates_cash_and_creates_transaction(db_session, test_
     ).count() == 0
 
 
-@pytest.mark.db
-def test_capital_addition_rejects_negative_amount(db_session, test_portfolio):
-    from app.api.portfolios import add_portfolio_capital
+def test_capital_addition_rejects_negative_amount():
+    from app.schemas.portfolio import PortfolioCapitalAddRequest
 
-    user_id, portfolio = test_portfolio
-    with pytest.raises(HTTPException) as exc_info:
-        add_portfolio_capital(
-            portfolio_id=portfolio.id,
-            data={"amount": Decimal("-1")},
-            user_id=user_id,
-            db=db_session,
+    # Request validation happens in the schema; calling the route function
+    # directly with a dict would bypass it.
+    with pytest.raises(ValidationError):
+        PortfolioCapitalAddRequest(amount=Decimal("-1"))
+
+
+def test_size_allocation_attaches_ml_diagnostics_only_where_given():
+    from app.services.return_providers import Driver
+
+    target, returns, cov, _ = _sized_example(Decimal("100000"))
+    tickers = [a.ticker for a in target.allocations if a.target_weight != 0]
+    ml_ticker = tickers[0]
+    driver = Driver(feature="momentum_20", value=Decimal("0.1"), contribution=Decimal("0.02"))
+    sized = size_allocation(
+        target,
+        returns,
+        cov,
+        Decimal("100000"),
+        Decimal("0.3"),
+        sources={ml_ticker: "ml"},
+        clipped={ml_ticker: True},
+        drivers={ml_ticker: [driver]},
+        typical_estimates={ml_ticker: Decimal("0.09")},
+    )
+    by_ticker = {a.ticker: a for a in sized.allocations}
+    assert (by_ticker[ml_ticker].clipped, by_ticker[ml_ticker].drivers, by_ticker[ml_ticker].typical_estimate) == (
+        True,
+        [driver],
+        Decimal("0.09"),
+    )
+    for ticker in tickers[1:]:
+        # Historical fallbacks: no drivers, no typical estimate, never clipped.
+        assert (by_ticker[ticker].clipped, by_ticker[ticker].drivers, by_ticker[ticker].typical_estimate) == (
+            False,
+            [],
+            None,
         )
-    assert exc_info.value.status_code == 422

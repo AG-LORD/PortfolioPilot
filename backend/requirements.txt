@@ -28,3 +28,4 @@ pytest==9.1.1
 scipy==1.17.1
 scikit-learn==1.9.1
 psycopg2-binary==2.9.13
+httpx2==2.13.1

@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, model_validator
 
 ResponseReturnModel = Literal["historical", "ml"]
+ForecastSource = Literal["precomputed", "on_request"]
 
 
 class RecommendationRequest(BaseModel):
@@ -20,6 +21,14 @@ class RecommendationRequest(BaseModel):
         return self
 
 
+class AllocationDriverItem(BaseModel):
+    feature: str
+    value: Decimal
+    # Annualized change in the estimate when this feature is replaced by its
+    # training median (local ablation; approximate, explains the model only).
+    contribution: Decimal
+
+
 class RecommendedAllocationItem(BaseModel):
     ticker: str
     expected_return: Decimal
@@ -29,6 +38,11 @@ class RecommendedAllocationItem(BaseModel):
     # Provider of this ticker's expected_return; "historical" in ml mode means
     # this ticker fell back because it had no usable ML forecast.
     source: ResponseReturnModel
+    # ML forecast capped to the model's training-label range.
+    clipped: bool = False
+    # ML-sourced tickers only; empty / null for historical fallbacks.
+    drivers: list[AllocationDriverItem] = []
+    typical_estimate: Decimal | None = None
 
 
 class ExcludedTickerItem(BaseModel):
@@ -50,6 +64,8 @@ class RecommendationRead(BaseModel):
     return_model: ResponseReturnModel
     model_version: str | None = None
     forecast_as_of: date | None = None
+    # Nightly stored forecasts vs. a model fitted on request; null when historical only.
+    forecast_source: ForecastSource | None = None
     capital: Decimal
     allocations: list[RecommendedAllocationItem]
     cash_weight: Decimal

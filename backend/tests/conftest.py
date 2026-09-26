@@ -13,6 +13,8 @@ from app.models import (
     Portfolio,
     PortfolioSnapshot,
     PriceCacheCoverage,
+    RebalanceProposal,
+    RecommendationSnapshot,
     RiskProfile,
     Transaction,
     UserProfile,
@@ -84,6 +86,14 @@ def test_portfolio(db_session):
     yield user_id, portfolio
 
     db_session.rollback()
+    # Every table with a foreign key to portfolios.id, children first:
+    # rebalance proposals reference recommendation snapshots.
+    db_session.query(RebalanceProposal).filter(
+        RebalanceProposal.portfolio_id == portfolio.id
+    ).delete()
+    db_session.query(RecommendationSnapshot).filter(
+        RecommendationSnapshot.portfolio_id == portfolio.id
+    ).delete()
     db_session.query(PortfolioSnapshot).filter(
         PortfolioSnapshot.portfolio_id == portfolio.id
     ).delete()

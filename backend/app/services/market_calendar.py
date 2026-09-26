@@ -26,3 +26,18 @@ def last_completed_trading_day(now: datetime) -> date:
     if local >= completed_at + CLOSE_SETTLE_BUFFER:
         return local.date()
     return local.date() - timedelta(days=1)
+
+
+def is_trading_weekday(day: date) -> bool:
+    """Monday to Friday. NSE exchange holidays are not known here, so a
+    holiday that falls on a weekday counts as a trading weekday."""
+    return day.weekday() < 5
+
+
+def latest_completed_trading_weekday(now: datetime) -> date:
+    """last_completed_trading_day(now), stepped back to the previous weekday
+    when that falls on a weekend."""
+    day = last_completed_trading_day(now)
+    while not is_trading_weekday(day):
+        day -= timedelta(days=1)
+    return day

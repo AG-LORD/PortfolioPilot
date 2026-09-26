@@ -347,9 +347,30 @@ def read_portfolio_recommendation(
         return_model=snapshot.return_model,
         model_version=snapshot.model_version,
         forecast_as_of=snapshot.forecast_as_of,
+        forecast_source=snapshot.forecast_source,
         capital=snapshot.capital,
         allocations=[
-            {"ticker": item["ticker"], "expected_return": Decimal(str(item["expected_return"])), "target_weight": Decimal(str(item["target_weight"])), "amount": Decimal(str(item["amount"])), "at_position_limit": item["at_position_limit"], "source": item["source"]}
+            {
+                "ticker": item["ticker"],
+                "expected_return": Decimal(str(item["expected_return"])),
+                "target_weight": Decimal(str(item["target_weight"])),
+                "amount": Decimal(str(item["amount"])),
+                "at_position_limit": item["at_position_limit"],
+                "source": item["source"],
+                # Older snapshots predate these fields.
+                "clipped": item.get("clipped", False),
+                "drivers": [
+                    {
+                        "feature": d["feature"],
+                        "value": Decimal(str(d["value"])),
+                        "contribution": Decimal(str(d["contribution"])),
+                    }
+                    for d in item.get("drivers", [])
+                ],
+                "typical_estimate": (
+                    None if item.get("typical_estimate") is None else Decimal(str(item["typical_estimate"]))
+                ),
+            }
             for item in snapshot.allocations
         ],
         cash_weight=snapshot.cash_weight,
