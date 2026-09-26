@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter
 
-from app.schemas.ml import ModelEvaluationRead
+from app.schemas.ml import EvaluationReportRead
 from app.schemas.overview import PortfolioOverviewRead
 from app.schemas.recommendation import RecommendationRead
 from app.schemas.universe import UniverseRead
@@ -20,7 +20,7 @@ MOCK_SCHEMAS = {
     "recommendation.ml.json": RecommendationRead,
     "universes.json": list[UniverseRead],
     "overview.json": PortfolioOverviewRead,
-    "ml-evaluation.json": list[ModelEvaluationRead],
+    "ml-evaluation.json": EvaluationReportRead,
 }
 
 

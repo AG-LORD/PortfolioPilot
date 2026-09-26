@@ -1,12 +1,21 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.dependencies import get_current_user_id
-from app.schemas.ml import ModelEvaluationRead
+from app.ml.evaluation_reports import (
+    EvaluationReportUnavailableError,
+    load_latest_evaluation_report,
+)
+from app.schemas.ml import EvaluationReportRead
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
 
-@router.get("/evaluation", response_model=list[ModelEvaluationRead])
+@router.get("/evaluation", response_model=EvaluationReportRead)
 def read_model_evaluation(user_id=Depends(get_current_user_id)):
-    # Contract stub: no models are trained yet.
-    return []
+    try:
+        return load_latest_evaluation_report()
+    except EvaluationReportUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No valid offline model evaluation report is available. Run scripts.run_evaluation to create one.",
+        ) from exc

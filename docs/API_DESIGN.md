@@ -24,23 +24,29 @@ and are validated against these schemas by `backend/tests/test_frontend_mocks.py
 | GET | `/portfolios/{portfolio_id}/transactions` | `TransactionRead[]` |
 | GET | `/portfolios/{portfolio_id}/holdings` | `HoldingRead[]` |
 | GET | `/portfolios/{portfolio_id}/valuation` | `PortfolioValuation` |
+| GET | `/portfolios/{portfolio_id}/drift` | `PortfolioDriftRead` |
 | GET | `/portfolios/{portfolio_id}/risk` | `RiskAnalyticsRead` |
 | GET | `/portfolios/{portfolio_id}/optimize` | `TargetAllocationRead` |
 | POST | `/portfolios/{portfolio_id}/recommendation` | `RecommendationRead` (see below) |
-| GET | `/portfolios/{portfolio_id}/recommendations` | `RecommendationRead[]` (stub: always `[]`) |
-| GET | `/portfolios/{portfolio_id}/recommendations/{recommendation_id}` | `RecommendationRead` (stub: always 404) |
+| GET | `/portfolios/{portfolio_id}/recommendations` | `RecommendationSummary[]`, newest first |
+| GET | `/portfolios/{portfolio_id}/recommendations/{recommendation_id}` | Stored immutable `RecommendationRead` |
+| POST | `/portfolios/{portfolio_id}/rebalance-proposals` | Persisted read-only `RebalanceProposalRead` |
+| GET | `/portfolios/{portfolio_id}/rebalance-proposals/{proposal_id}` | `RebalanceProposalRead` |
+| POST | `/portfolios/{portfolio_id}/rebalance-proposals/{proposal_id}/execute` | Confirmed `RebalanceExecutionRead` |
 | POST | `/portfolios/{portfolio_id}/snapshots` | `PortfolioSnapshotRead` |
+| GET | `/stocks/{ticker}/analysis` | `StockAnalysisRead` |
 | GET | `/universes` | `UniverseRead[]` (see below) |
-| GET | `/ml/evaluation` | `ModelEvaluationRead[]` (stub: always `[]`) |
+| GET | `/ml/evaluation` | Latest saved `EvaluationReportRead`; 503 if unavailable |
+| POST | `/backtests` | `BacktestResultRead` (simulation only) |
 
 Endpoints without a section below are described by their schema in `/docs`.
 
 ## POST /portfolios/{portfolio_id}/recommendation
 
 Recommends how to allocate the portfolio's available cash (`cash_balance`)
-across a candidate universe. Recommendation only: it does not write holdings,
-transactions, cash balance or any other table, and nothing is persisted.
-Works for portfolios with no holdings.
+across a candidate universe. Recommendation generation does not change cash,
+holdings, or transactions. A successful result is saved as an immutable
+`recommendation_snapshots` row. Works for portfolios with no holdings.
 
 **Request**: exactly one of `universe` or `tickers`.
 
@@ -71,8 +77,8 @@ Works for portfolios with no holdings.
 
 ```json
 {
-  "id": null,
-  "created_at": null,
+  "id": "<saved snapshot uuid>",
+  "created_at": "<snapshot timestamp>",
   "portfolio_id": "<uuid>",
   "universe": "NIFTY50",
   "universe_as_of": "2026-09-25",
@@ -106,7 +112,7 @@ Works for portfolios with no holdings.
 - `source` (per allocation) is `"ml"` or `"historical"`. In `ml` mode, `"historical"` marks a ticker that fell back.
 - `model_version` and `forecast_as_of` are set only when `return_model` is `"ml"`. `model_version` is a fixed identifier (model, horizon, feature count, version), not a training timestamp.
 - `expected_portfolio_return` is Σ weight × expected_return. `expected_portfolio_volatility` is √(wᵀΣw) from the covariance above. Both are annualized estimates, not realized results.
-- `id` and `created_at` are reserved for saved recommendations; always `null` from this endpoint today.
+- `id` and `created_at` identify the immutable snapshot saved by this generation request.
 
 **Errors**
 - `401`: missing, invalid or expired token.
@@ -119,22 +125,20 @@ Works for portfolios with no holdings.
   - infeasible risk-profile constraints
 - `503` is not used by this endpoint. A failed market-data download shows up as excluded tickers with the reason `history request failed: …`.
 
-## GET /portfolios/{portfolio_id}/recommendations
+## Recommendation history
 
-Saved recommendations for a portfolio, newest first. Not persisted yet, so this
-always returns `[]` (after the ownership check). Items will have the
-`RecommendationRead` shape with `id` and `created_at` set.
+`GET /portfolios/{portfolio_id}/recommendations` returns summary rows newest
+first. `GET /portfolios/{portfolio_id}/recommendations/{id}` reconstructs the
+full response only from the saved snapshot. Opening a historical item does not
+fetch current prices or regenerate allocations.
 
 ```json
-[]
+[{"id":"<uuid>","created_at":"<timestamp>","universe":"NIFTY50","return_model":"ml","model_version":"<version>","capital":"100000.0000","cash_weight":"0.1","expected_portfolio_return":"0.08","expected_portfolio_volatility":"0.12"}]
 ```
 
-## GET /portfolios/{portfolio_id}/recommendations/{recommendation_id}
-
-One saved recommendation (`RecommendationRead`). Not persisted yet, so this
-always returns `404 Recommendation not found` for the owner, and
-`404 Portfolio not found` for anyone else. See
-`frontend/src/lib/mocks/recommendation.ml.json` for the future shape.
+Snapshots preserve capital, universe/as-of date, return model and versions,
+forecast date, expected return/volatility, cash, constraints, allocations and
+their sources, and exclusions.
 
 ## GET /portfolios/overview
 
@@ -189,13 +193,57 @@ supplied yet is listed with `configured: false`, `as_of: null` and no tickers.
 
 ## GET /ml/evaluation
 
-Out-of-sample evaluation results per model. Stub: always `[]` until models are
-trained. Item shape:
+Returns the latest saved artifact from the offline purged walk-forward
+evaluator. The API request does not train models. The report includes model and
+feature versions, baseline and ML metrics, scored sample/date coverage,
+exclusions, and per-block IC. If no valid artifact exists, the route returns
+503; run `python -m scripts.run_evaluation` from `backend/` to create one.
 
 ```json
-[
-  { "model": "gradient_boosting", "mae": "0.0123", "hit_rate": "0.54", "mean_ic": "0.03", "test_blocks": 5, "as_of": "2026-09-01" }
-]
+{"generated_at":"<timestamp>","evaluation_version":"purged-walk-forward-v1","feature_version":"point-in-time-technical-v1","model_versions":{"historical_mean":"<version>","ridge":"<version>","hist_gradient_boosting":"<version>"},"settings":{"universe":"NIFTY50","start":"<date>","end":"<date>","blocks":5,"horizon":20},"data":{"requested_tickers":50,"tickers_used":["<symbols>"],"scored_rows":0},"metrics":[{"model":"historical_mean","mae":"<decimal>","hit_rate":"<decimal>","mean_ic":"<decimal>","ic_std_error":"<decimal>","test_blocks":5,"as_of":"<date>"}],"per_block_ic":{},"ic_std_error_note":"<methodology note>"}
 ```
 
-- `mae`: mean absolute error of the forecast return. `hit_rate`: fraction of correctly predicted signs. `mean_ic`: mean information coefficient across test blocks. `test_blocks`: number of walk-forward test blocks.
+- Forecast metrics are not live portfolio returns. The naive IC standard error is optimistic because labels overlap.
+
+## Drift and rebalancing
+
+`GET /portfolios/{id}/drift` computes weights from the portfolio's current
+holdings, cash, and backend quotes, then compares them with the latest saved
+recommendation. Missing quotes make the valuation incomplete; the response
+reports missing symbols and withholds unreliable weights. Targets older than a
+portfolio update are marked stale.
+
+`POST /portfolios/{id}/rebalance-proposals` accepts an optional
+`recommendation_id` and saves a pending proposal without changing holdings,
+cash, or transactions. Prices come from backend market data. Proposed
+quantities are whole shares, sales are accounted for before purchases, and
+purchases are capped to cash after projected sales. Estimated fees are zero
+because no fee schedule is configured; this is stated in the response.
+
+Execution is separate and requires `{"confirm": true}` at
+`POST /portfolios/{id}/rebalance-proposals/{proposal_id}/execute`. The backend
+locks and revalidates portfolio state and prices, rejects stale or already
+executed proposals, and commits cash, holdings, transactions, and proposal
+status atomically.
+
+## Stock analysis
+
+`GET /stocks/{ticker}/analysis` lazily loads adjusted cached OHLC history,
+computes the existing point-in-time indicators and return/volatility metrics,
+and reports current-quote availability separately from latest close. Optional
+`portfolio_id` adds current portfolio weight and latest saved-target context;
+optional `recommendation_id` selects a particular stored target and requires
+`portfolio_id`. No BUY/HOLD/SELL rating or unsupported fundamentals are emitted.
+
+## POST /backtests
+
+Runs a historical simulation from `start`, `end`, `rebalance_frequency`,
+`starting_capital`, universe/tickers, `return_model`, `max_position_weight`, and
+`target_volatility`. It uses existing purged walk-forward predictions, adjusted
+cached prices, covariance and risk-constrained optimization. Results include a
+historical-mean baseline, equity curves, return/volatility/drawdown/Sharpe,
+turnover, and rebalance counts. Signal decisions execute at the next common
+price session; fractional shares are used; fees are excluded because no fee
+schedule exists; the risk-free-rate assumption is zero. The API does not touch
+live portfolio state. Outputs are explicitly backtest results, not realized
+live performance.

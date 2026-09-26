@@ -9,10 +9,12 @@ from price_fakes import TEST_TICKER_PREFIX, FakeMarket
 from app.database import SessionLocal
 from app.models import (
     DailyPrice,
+    Holding,
     Portfolio,
     PortfolioSnapshot,
     PriceCacheCoverage,
     RiskProfile,
+    Transaction,
     UserProfile,
 )
 from app.services import market_data
@@ -81,9 +83,14 @@ def test_portfolio(db_session):
 
     yield user_id, portfolio
 
+    db_session.rollback()
     db_session.query(PortfolioSnapshot).filter(
         PortfolioSnapshot.portfolio_id == portfolio.id
     ).delete()
+    db_session.query(Transaction).filter(
+        Transaction.portfolio_id == portfolio.id
+    ).delete()
+    db_session.query(Holding).filter(Holding.portfolio_id == portfolio.id).delete()
     db_session.query(Portfolio).filter(Portfolio.id == portfolio.id).delete()
     db_session.query(RiskProfile).filter(RiskProfile.id == risk_profile.id).delete()
     db_session.query(UserProfile).filter(UserProfile.id == user_id).delete()

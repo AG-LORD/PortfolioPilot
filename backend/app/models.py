@@ -7,11 +7,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from decimal import Decimal
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     UniqueConstraint,
@@ -201,7 +203,7 @@ class Transaction(Base):
             name="ck_transaction_fees_nonnegative",
         ),
         CheckConstraint(
-            "transaction_type IN ('BUY', 'SELL')",
+            "transaction_type IN ('BUY', 'SELL', 'DEPOSIT')",
             name="ck_transaction_type",
         ),
     )
@@ -246,6 +248,77 @@ class Transaction(Base):
         String(30),
         nullable=False,
     )
+
+class RecommendationSnapshot(Base):
+    __tablename__ = "recommendation_snapshots"
+    __table_args__ = (
+        Index(
+            "ix_recommendation_snapshots_portfolio_created_at",
+            "portfolio_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    portfolio_id: Mapped[UUID] = mapped_column(
+        ForeignKey("portfolios.id"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    capital: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    universe: Mapped[str] = mapped_column(String(100), nullable=False)
+    universe_as_of: Mapped[calendar_date | None] = mapped_column(Date, nullable=True)
+    return_model: Mapped[str] = mapped_column(String(20), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    forecast_as_of: Mapped[calendar_date | None] = mapped_column(Date, nullable=True)
+    expected_portfolio_return: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False)
+    expected_portfolio_volatility: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False)
+    cash_weight: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False)
+    cash_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    max_position_weight: Mapped[Decimal] = mapped_column(Numeric(8, 6), nullable=False)
+    target_volatility: Mapped[Decimal] = mapped_column(Numeric(8, 6), nullable=False)
+    allocations: Mapped[dict] = mapped_column(JSON, nullable=False)
+    excluded: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class RebalanceProposal(Base):
+    __tablename__ = "rebalance_proposals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING', 'EXECUTED', 'EXPIRED')",
+            name="ck_rebalance_proposal_status",
+        ),
+        Index("ix_rebalance_proposals_portfolio_created_at", "portfolio_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    portfolio_id: Mapped[UUID] = mapped_column(ForeignKey("portfolios.id"), nullable=False)
+    recommendation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("recommendation_snapshots.id"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="PENDING")
+    state_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    portfolio_value: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    cash_before: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    projected_cash: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    buy_total: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    sell_total: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    estimated_fees: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    fee_assumption: Mapped[str] = mapped_column(String(255), nullable=False)
+    trades: Mapped[list] = mapped_column(JSON, nullable=False)
+    resulting_weights: Mapped[list] = mapped_column(JSON, nullable=False)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class PortfolioSnapshot(Base):
     __tablename__ = "portfolio_snapshots"

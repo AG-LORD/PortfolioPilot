@@ -13,14 +13,15 @@ capital, all with 2 decimals.
 
 import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_DOWN, Decimal
 from uuid import UUID
 
 import numpy as np
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import RiskProfile
+from app.models import RecommendationSnapshot, RiskProfile
 from app.services.expected_returns import ExcludedTicker, get_expected_returns_for_universe
 from app.services.optimization import (
     OptimizationError,
@@ -84,6 +85,8 @@ class Recommendation:
     excluded: list[ExcludedTicker]
     model_version: str | None = None
     forecast_as_of: date | None = None
+    id: UUID | None = None
+    created_at: datetime | None = None
 
 
 def size_allocation(
@@ -193,3 +196,66 @@ def get_portfolio_recommendation(
         ),
         excluded=data.excluded,
     )
+
+
+def persist_recommendation_snapshot(db: Session, portfolio_id: UUID, recommendation: Recommendation) -> RecommendationSnapshot:
+    snapshot = RecommendationSnapshot(
+        portfolio_id=portfolio_id,
+        capital=recommendation.capital,
+        universe=recommendation.universe,
+        universe_as_of=recommendation.universe_as_of,
+        return_model=recommendation.return_model,
+        model_version=recommendation.model_version,
+        forecast_as_of=recommendation.forecast_as_of,
+        expected_portfolio_return=recommendation.expected_portfolio_return,
+        expected_portfolio_volatility=recommendation.expected_portfolio_volatility,
+        cash_weight=recommendation.cash_weight,
+        cash_amount=recommendation.cash_amount,
+        max_position_weight=recommendation.constraints.max_position_weight,
+        target_volatility=recommendation.constraints.target_volatility,
+        allocations=[
+            {
+                "ticker": item.ticker,
+                "expected_return": str(item.expected_return),
+                "target_weight": str(item.target_weight),
+                "amount": str(item.amount),
+                "at_position_limit": item.at_position_limit,
+                "source": item.source,
+            }
+            for item in recommendation.allocations
+        ],
+        excluded=[
+            {"ticker": item.ticker, "reason": item.reason}
+            for item in recommendation.excluded
+        ],
+    )
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot
+
+
+def list_recommendation_snapshots(db: Session, user_id: UUID, portfolio_id: UUID) -> list[RecommendationSnapshot]:
+    get_portfolio(db, user_id, portfolio_id)
+    return (
+        db.scalars(
+            select(RecommendationSnapshot)
+            .where(RecommendationSnapshot.portfolio_id == portfolio_id)
+            .order_by(RecommendationSnapshot.created_at.desc())
+        )
+        .all()
+    )
+
+
+def get_recommendation_snapshot(
+    db: Session,
+    user_id: UUID,
+    portfolio_id: UUID,
+    recommendation_id: UUID,
+) -> RecommendationSnapshot:
+    get_portfolio(db, user_id, portfolio_id)
+    snapshot = db.get(RecommendationSnapshot, recommendation_id)
+    if snapshot is None or snapshot.portfolio_id != portfolio_id:
+        raise ValueError("Recommendation not found")
+    return snapshot
+

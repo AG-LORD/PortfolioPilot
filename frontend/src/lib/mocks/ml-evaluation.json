@@ -1,20 +1,63 @@
-[
-  {
-    "_mock": true,
-    "model": "mock_historical_mean",
-    "mae": "0.011111",
-    "hit_rate": "0.5",
-    "mean_ic": "0.01",
-    "test_blocks": 3,
-    "as_of": "2026-01-01"
+{
+  "_mock": true,
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "evaluation_version": "purged-walk-forward-v1",
+  "feature_version": "point-in-time-technical-v1",
+  "model_versions": {
+    "historical_mean": "historical-mean-lookback-252-v1",
+    "ridge": "ridge-alpha-1-fixed-v1",
+    "hist_gradient_boosting": "hist-gradient-boosting-fixed-v1"
   },
-  {
-    "_mock": true,
-    "model": "mock_gradient_boosting",
-    "mae": "0.010000",
-    "hit_rate": "0.55",
-    "mean_ic": "0.02",
-    "test_blocks": 3,
-    "as_of": "2026-01-01"
+  "settings": {
+    "universe": "NIFTY50",
+    "universe_as_of": "2025-12-31",
+    "universe_revision": "NIFTY50@2025-12-31:mock",
+    "start": "2025-01-01",
+    "end": "2025-12-31",
+    "blocks": 3,
+    "horizon": 20,
+    "min_feature_history": 252,
+    "source": "test fixture"
+  },
+  "data": {
+    "requested_tickers": 1,
+    "tickers_used": ["TCS"],
+    "excluded": [],
+    "panel_rows": 300,
+    "panel_dates": ["2025-01-01", "2025-12-31"],
+    "scored_rows": 100,
+    "scored_dates": ["2025-05-01", "2025-12-31"]
+  },
+  "metrics": [
+    {
+      "model": "historical_mean",
+      "mae": "0.011111",
+      "hit_rate": "0.5",
+      "mean_ic": "0.01",
+      "ic_std_error": "0.005",
+      "test_blocks": 3,
+      "as_of": "2025-12-31"
+    },
+    {
+      "model": "ridge",
+      "mae": "0.010000",
+      "hit_rate": "0.55",
+      "mean_ic": "0.02",
+      "ic_std_error": "0.004",
+      "test_blocks": 3,
+      "as_of": "2025-12-31"
+    }
+  ],
+  "ic_std_error_note": "Mock fixture only. Overlapping labels make uncertainty optimistic.",
+  "per_block_ic": {
+    "historical_mean": [
+      {
+        "block": 1,
+        "start": "2025-05-01",
+        "end": "2025-08-31",
+        "ic_dates": 20,
+        "mean_ic": "0.01"
+      }
+    ]
   }
-]
+}

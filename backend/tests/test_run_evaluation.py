@@ -96,6 +96,9 @@ def test_report_json_contents(script_run):
     _, report = script_run
     assert report["settings"]["source"] == "yfinance, in memory"
     assert report["settings"]["min_feature_history"] == 252
+    assert report["evaluation_version"] == "purged-walk-forward-v1"
+    assert report["feature_version"] == "point-in-time-technical-v1"
+    assert report["model_versions"]["ridge"] == "ridge-alpha-1-fixed-v1"
     data = report["data"]
     assert data["tickers_used"] == GOOD
     short_rows = sum((date(2025, 12, 31) - timedelta(days=i)).weekday() < 5 for i in range(200))

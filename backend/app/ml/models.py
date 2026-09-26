@@ -25,6 +25,11 @@ HGB_PARAMS = {
 RIDGE = "ridge"
 HIST_GRADIENT_BOOSTING = "hist_gradient_boosting"
 MODEL_NAMES = (RIDGE, HIST_GRADIENT_BOOSTING)
+MODEL_VERSIONS = {
+    "historical_mean": "historical-mean-lookback-252-v1",
+    RIDGE: "ridge-alpha-1-fixed-v1",
+    HIST_GRADIENT_BOOSTING: "hist-gradient-boosting-fixed-v1",
+}
 
 
 def make_model(name: str) -> Pipeline:

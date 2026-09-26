@@ -59,6 +59,8 @@ class RecommendationRead(BaseModel):
     constraints: RecommendationConstraintsRead
     excluded: list[ExcludedTickerItem]
 
+    model_config = {"from_attributes": True}
+
 
 class RecommendationSummary(BaseModel):
     id: UUID
@@ -70,3 +72,5 @@ class RecommendationSummary(BaseModel):
     cash_weight: Decimal
     expected_portfolio_return: Decimal
     expected_portfolio_volatility: Decimal
+
+    model_config = {"from_attributes": True}

@@ -77,6 +77,7 @@ FEATURE_COLUMNS = [
     "realized_vol_20",
 ]
 LABEL_COLUMN = "label"
+FEATURE_SET_VERSION = "point-in-time-technical-v1"
 
 
 def prices_to_frame(points: list[PricePoint]) -> pd.DataFrame:

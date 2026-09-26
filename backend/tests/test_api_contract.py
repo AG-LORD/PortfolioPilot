@@ -28,6 +28,11 @@ def test_openapi_exposes_contract_endpoints():
         ("/portfolios/{portfolio_id}/recommendation", "post"),
         ("/portfolios/{portfolio_id}/recommendations", "get"),
         ("/portfolios/{portfolio_id}/recommendations/{recommendation_id}", "get"),
+        ("/portfolios/{portfolio_id}/drift", "get"),
+        ("/portfolios/{portfolio_id}/rebalance-proposals", "post"),
+        ("/portfolios/{portfolio_id}/rebalance-proposals/{proposal_id}/execute", "post"),
+        ("/stocks/{ticker}/analysis", "get"),
+        ("/backtests", "post"),
     }
     assert expected <= {(p, m) for p, ops in paths.items() for m in ops}
 
@@ -114,8 +119,42 @@ def test_universes_route_lists_configured_universe(tmp_path, monkeypatch):
     assert str(universe.as_of) == "2026-01-01"
 
 
-def test_ml_evaluation_stub_returns_empty_list():
-    assert read_model_evaluation(user_id=uuid4()) == []
+def test_ml_evaluation_route_returns_saved_report(monkeypatch):
+    saved_report = {"source": "offline artifact"}
+    monkeypatch.setattr("app.api.ml.load_latest_evaluation_report", lambda: saved_report)
+
+    assert read_model_evaluation(user_id=uuid4()) is saved_report
+
+
+@pytest.mark.db
+def test_portfolio_routes_hide_other_users_portfolio(db_session, test_portfolio):
+    from app.api.portfolios import (
+        add_portfolio_capital,
+        read_own_portfolio,
+        read_portfolio_recommendations,
+    )
+    from app.schemas.portfolio import PortfolioCapitalAddRequest
+
+    _, portfolio = test_portfolio
+    stranger = uuid4()
+
+    with pytest.raises(HTTPException) as read_error:
+        read_own_portfolio(portfolio_id=portfolio.id, user_id=stranger, db=db_session)
+    assert read_error.value.status_code == 404
+
+    with pytest.raises(HTTPException) as history_error:
+        read_portfolio_recommendations(portfolio_id=portfolio.id, user_id=stranger, db=db_session)
+    assert history_error.value.status_code == 404
+
+    with pytest.raises(HTTPException) as capital_error:
+        add_portfolio_capital(
+            portfolio_id=portfolio.id,
+            data=PortfolioCapitalAddRequest(amount=Decimal("10")),
+            user_id=stranger,
+            db=db_session,
+        )
+    assert capital_error.value.status_code == 404
+    assert db_session.get(Portfolio, portfolio.id).cash_balance == Decimal("50000")
 
 
 # --- overview and saved recommendations (DB) ----------------------------------

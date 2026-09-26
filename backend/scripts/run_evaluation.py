@@ -22,16 +22,19 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from app.ml.evaluation import (
+    BASELINE_MODEL,
     EvaluationError,
     ic_standard_errors,
     per_block_ic,
     run_walk_forward,
     summarize_walk_forward,
 )
+from app.ml.models import MODEL_VERSIONS
 from app.ml.splits import N_TEST_BLOCKS
 from app.services import market_data
 from app.services.features import (
     DEFAULT_HORIZON,
+    FEATURE_SET_VERSION,
     MIN_FEATURE_HISTORY,
     FeaturePanel,
     build_panel_from_prices,
@@ -121,6 +124,9 @@ def run(args: argparse.Namespace) -> dict:
 
     report = {
         "generated_at": datetime.now(MARKET_TIMEZONE).isoformat(timespec="seconds"),
+        "evaluation_version": "purged-walk-forward-v1",
+        "feature_version": FEATURE_SET_VERSION,
+        "model_versions": MODEL_VERSIONS,
         "settings": {
             "universe": universe.name,
             "universe_as_of": universe.as_of.isoformat() if universe.as_of else None,

@@ -1,69 +1,111 @@
-import Image from "next/image";
+import Link from "next/link";
+
+const decisionStages = [
+  ["01", "Market data", "Adjusted price history"],
+  ["02", "Point-in-time features", "Signals built from past data"],
+  ["03", "Expected returns", "ML forecast or historical baseline"],
+  ["04", "Risk-constrained target", "Allocation with cash preserved"],
+];
+
+const capabilities = [
+  {
+    number: "01",
+    title: "Manage the portfolio you have",
+    body: "Keep portfolio capital, cash, holdings and transactions together in one persistent view.",
+  },
+  {
+    number: "02",
+    title: "Understand risk in context",
+    body: "Review valuation and snapshot-based risk measures alongside your current portfolio state.",
+  },
+  {
+    number: "03",
+    title: "Explore a target allocation",
+    body: "Compare historical estimates or ML-assisted forecasts through risk-constrained optimization.",
+  },
+];
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="landing-page">
+      <header className="landing-nav">
+        <Link className="landing-brand" href="/" aria-label="PortfolioPilot home">
+          <span className="landing-brand-mark" aria-hidden="true">P</span>
+          <span>PortfolioPilot</span>
+        </Link>
+        <nav className="landing-nav-links" aria-label="Main navigation">
+          <a href="#approach">Approach</a>
+          <a href="#platform">Platform</a>
+        </nav>
+        <div className="landing-nav-actions">
+          <Link className="landing-login" href="/login">Log in</Link>
+          <Link className="landing-nav-cta" href="/register">Get started</Link>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </header>
+
+      <section className="landing-hero" aria-labelledby="landing-title">
+        <p className="landing-kicker"><span /> A clearer portfolio decision process</p>
+        <h1 id="landing-title">PortfolioPilot</h1>
+        <p className="landing-lede">ML-assisted, risk-aware portfolio decision support.</p>
+        <p className="landing-intro">
+          Manage your current portfolio, understand its risk, and explore a target allocation
+          grounded in market history and explicit constraints.
+        </p>
+        <div className="landing-actions">
+          <Link className="landing-primary" href="/register">Create an account <span aria-hidden="true">↗</span></Link>
+          <Link className="landing-secondary" href="/login">Log in</Link>
         </div>
-      </main>
-    </div>
+        <p className="landing-advisory">Recommendations are advisory. Generating one never places a trade.</p>
+      </section>
+
+      <section className="landing-approach" id="approach" aria-labelledby="approach-title">
+        <div className="landing-section-heading">
+          <p className="landing-kicker">A transparent decision path</p>
+          <h2 id="approach-title">From market data to a target allocation</h2>
+          <p>Each recommendation follows the same visible sequence. Forecasts inform the decision; risk constraints shape it.</p>
+        </div>
+        <ol className="landing-stage-list">
+          {decisionStages.map(([number, title, detail]) => (
+            <li className="landing-stage" key={number}>
+              <span className="landing-stage-number">{number}</span>
+              <strong>{title}</strong>
+              <span>{detail}</span>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <section className="landing-platform" id="platform" aria-labelledby="platform-title">
+        <div className="landing-platform-heading">
+          <p className="landing-kicker">Built around your portfolio</p>
+          <h2 id="platform-title">A decision tool, not an autopilot.</h2>
+          <p>Portfolio state stays authoritative. Recommendations remain separate from holdings and trades.</p>
+        </div>
+        <div className="landing-capabilities">
+          {capabilities.map((capability) => (
+            <article className="landing-capability" key={capability.number}>
+              <span>{capability.number}</span>
+              <div>
+                <h3>{capability.title}</h3>
+                <p>{capability.body}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+        <p className="landing-next-step">
+          Portfolio monitoring and rebalancing belong after a target is set: review drift, inspect a proposal,
+          and keep any eventual execution under your explicit control.
+        </p>
+      </section>
+
+      <footer className="landing-footer">
+        <Link className="landing-brand" href="/">
+          <span className="landing-brand-mark" aria-hidden="true">P</span>
+          <span>PortfolioPilot</span>
+        </Link>
+        <p>Risk-aware decisions. Yours to make.</p>
+        <Link href="/register">Get started <span aria-hidden="true">↗</span></Link>
+      </footer>
+    </main>
   );
 }

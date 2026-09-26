@@ -497,3 +497,84 @@ def test_ml_mode_does_not_mutate_portfolio_state(db_session, test_portfolio, fak
 
     db_session.query(Holding).filter(Holding.id == holding.id).delete()
     db_session.commit()
+
+
+@pytest.mark.db
+def test_recommendation_history_persists_and_lists(db_session, test_portfolio, fake_market):
+    from app.api.portfolios import create_portfolio_recommendation, read_portfolio_recommendations
+
+    user_id, portfolio = test_portfolio
+    fake_market.series = _good_universe_series()
+
+    first = create_portfolio_recommendation(
+        portfolio_id=portfolio.id,
+        data=RecommendationRequest(tickers=PLACEHOLDER_UNIVERSE),
+        user_id=user_id,
+        db=db_session,
+    )
+
+    history = read_portfolio_recommendations(portfolio_id=portfolio.id, user_id=user_id, db=db_session)
+    assert len(history) == 1
+    assert history[0].id == first.id
+    assert history[0].capital == first.capital
+    assert history[0].universe == first.universe
+
+
+@pytest.mark.db
+def test_capital_addition_updates_cash_and_creates_transaction(db_session, test_portfolio):
+    from app.api.portfolios import add_portfolio_capital
+    from app.schemas.portfolio import PortfolioCapitalAddRequest
+
+    user_id, portfolio = test_portfolio
+    holding = Holding(
+        portfolio_id=portfolio.id,
+        ticker="ZZTEST_EXISTING",
+        quantity=Decimal("3"),
+        average_cost=Decimal("125"),
+    )
+    db_session.add(holding)
+    db_session.commit()
+    before = db_session.get(Portfolio, portfolio.id).cash_balance
+
+    updated = add_portfolio_capital(
+        portfolio_id=portfolio.id,
+        data=PortfolioCapitalAddRequest(amount=Decimal("50000")),
+        user_id=user_id,
+        db=db_session,
+    )
+
+    assert updated.cash_balance == before + Decimal("50000")
+    txn = (
+        db_session.query(Transaction)
+        .filter(Transaction.portfolio_id == portfolio.id)
+        .order_by(Transaction.created_at.desc())
+        .first()
+    )
+    assert txn is not None
+    assert txn.ticker == "CASH"
+    assert txn.transaction_type == "DEPOSIT"
+    assert txn.source == "capital"
+    assert txn.quantity == Decimal("1")
+    assert txn.price == Decimal("50000")
+    assert txn.fees == Decimal("0")
+    assert db_session.query(Holding).filter(Holding.portfolio_id == portfolio.id).count() == 1
+    assert db_session.get(Holding, holding.id).quantity == Decimal("3")
+    assert db_session.query(Holding).filter(
+        Holding.portfolio_id == portfolio.id,
+        Holding.ticker == "CASH",
+    ).count() == 0
+
+
+@pytest.mark.db
+def test_capital_addition_rejects_negative_amount(db_session, test_portfolio):
+    from app.api.portfolios import add_portfolio_capital
+
+    user_id, portfolio = test_portfolio
+    with pytest.raises(HTTPException) as exc_info:
+        add_portfolio_capital(
+            portfolio_id=portfolio.id,
+            data={"amount": Decimal("-1")},
+            user_id=user_id,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 422

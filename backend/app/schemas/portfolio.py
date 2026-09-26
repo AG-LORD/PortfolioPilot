@@ -5,6 +5,10 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class PortfolioCapitalAddRequest(BaseModel):
+    amount: Decimal = Field(gt=0)
+
+
 class PortfolioCreate(BaseModel):
     name: str = Field(max_length=100)
     purpose: str | None = Field(default=None, max_length=255)
