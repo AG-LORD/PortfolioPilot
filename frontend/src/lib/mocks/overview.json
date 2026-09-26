@@ -4,9 +4,10 @@
     "portfolio_count": 2,
     "initial_capital": "300000.0000",
     "cash_balance": "150000.0000",
-    "market_value": null,
-    "total_value": null,
-    "unrealized_pnl": null
+    "market_value": "55555.00",
+    "total_value": "105555.00",
+    "unrealized_pnl": "5555.00",
+    "valued_portfolio_count": 1
   },
   "portfolios": [
     {

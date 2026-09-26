@@ -4,28 +4,42 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { apiFetch } from "@/lib/api";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
 import { getErrorMessage } from "@/lib/errors";
+import type { PortfolioOverview, PortfolioOverviewItem } from "@/lib/types/api";
 
-type Portfolio = {
-  id: string;
-  name: string;
-  base_currency: string;
-  initial_capital: string;
-  cash_balance: string;
-};
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function PortfolioValue({ portfolio }: { portfolio: PortfolioOverviewItem }) {
+  // Value and P&L only when the backend could price every holding; otherwise show nothing.
+  if (portfolio.valuation_status !== "ok" || portfolio.total_value === null) return null;
+  const pnl = portfolio.unrealized_pnl;
+  const pnlClass = pnl === null ? "" : Number(pnl) >= 0 ? "pnl-positive" : "pnl-negative";
+  return (
+    <div className="portfolio-meta" style={{ textAlign: "right" }}>
+      <strong>{formatCurrency(portfolio.total_value)}</strong>
+      {pnl !== null && (
+        <small className={pnlClass}>
+          P&amp;L {formatCurrency(pnl)}
+          {portfolio.unrealized_pnl_pct !== null && ` (${formatPercent(portfolio.unrealized_pnl_pct, 1)})`}
+        </small>
+      )}
+    </div>
+  );
+}
 
 export default function DashboardPage() {
-  const [portfolios, setPortfolios] = useState<Portfolio[] | null>(null);
+  const [overview, setOverview] = useState<PortfolioOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const supabase = createClient();
 
-    async function loadPortfolios(accessToken: string) {
+    async function loadOverview(accessToken: string) {
       try {
-        const data = await apiFetch<Portfolio[]>("/portfolios", accessToken);
-        setPortfolios(data);
+        setOverview(await apiFetch<PortfolioOverview>("/portfolios/overview", accessToken));
       } catch (err) {
         console.error("Failed to load portfolios:", err);
         setError(getErrorMessage(err, "Unable to load your portfolios. Please try again."));
@@ -36,7 +50,7 @@ export default function DashboardPage() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session) {
-        loadPortfolios(session.access_token);
+        void loadOverview(session.access_token);
       } else {
         setError("No active session.");
       }
@@ -59,7 +73,7 @@ export default function DashboardPage() {
     );
   }
 
-  if (!portfolios) {
+  if (!overview) {
     return (
       <main className="page-shell">
         <div className="page-header">
@@ -75,6 +89,11 @@ export default function DashboardPage() {
     );
   }
 
+  const { totals, portfolios } = overview;
+  // The backend sums value only over portfolios it could price ("ok").
+  const valuedCount = totals.valued_portfolio_count ?? 0;
+  const hasValueTotal = valuedCount > 0 && totals.total_value !== null;
+
   return (
     <main className="page-shell">
       <header className="page-header">
@@ -82,50 +101,37 @@ export default function DashboardPage() {
           <span className="eyebrow">Portfolio dashboard</span>
           <h1 className="page-title">Your Portfolios</h1>
         </div>
-        <div className="summary-row">
-          <Link href="/dashboard/model-evaluation" className="secondary-button">
-            Model evaluation
-          </Link>
-          <Link href="/dashboard/backtesting" className="secondary-button">
-            Backtesting
-          </Link>
-          <Link href="/dashboard/new-portfolio" className="primary-button">
-            + Create Portfolio
-          </Link>
-        </div>
+        <Link href="/dashboard/new-portfolio" className="primary-button">
+          + Create Portfolio
+        </Link>
       </header>
 
-      <section className="metric-grid" aria-label="Portfolio summary">
+      <section className={`metric-grid ${hasValueTotal ? "" : "metric-grid-3"}`} aria-label="Portfolio summary">
         <article className="metric-card">
-          <span className="metric-label">Total portfolios</span>
-          <strong className="metric-value">{portfolios.length}</strong>
+          <span className="metric-label">Portfolios</span>
+          <strong className="metric-value">{totals.portfolio_count}</strong>
         </article>
         <article className="metric-card">
-          <span className="metric-label">Total capital</span>
-          <strong className="metric-value">
-            {formatCurrency(
-              portfolios.reduce((sum, portfolio) => sum + Number(portfolio.initial_capital || 0), 0),
-            )}
-          </strong>
+          <span className="metric-label">Capital deposited</span>
+          <strong className="metric-value">{formatCurrency(totals.initial_capital)}</strong>
         </article>
         <article className="metric-card">
-          <span className="metric-label">Cash held</span>
-          <strong className="metric-value">
-            {formatCurrency(
-              portfolios.reduce((sum, portfolio) => sum + Number(portfolio.cash_balance || 0), 0),
-            )}
-          </strong>
+          <span className="metric-label">Cash</span>
+          <strong className="metric-value">{formatCurrency(totals.cash_balance)}</strong>
         </article>
-        <article className="metric-card">
-          <span className="metric-label">Status</span>
-          <strong className="metric-value">{portfolios.length > 0 ? "Active" : "Ready"}</strong>
-        </article>
+        {hasValueTotal && totals.total_value !== null && (
+          <article className="metric-card">
+            <span className="metric-label">
+              {valuedCount < totals.portfolio_count ? `Value (${valuedCount} of ${totals.portfolio_count} portfolios)` : "Value"}
+            </span>
+            <strong className="metric-value">{formatCurrency(totals.total_value)}</strong>
+          </article>
+        )}
       </section>
 
       <section className="card list-card">
         <div className="section-header">
           <h2 className="section-title">Current portfolios</h2>
-          <span className="badge neutral">{portfolios.length} portfolio{portfolios.length === 1 ? "" : "s"}</span>
         </div>
 
         {portfolios.length === 0 ? (
@@ -137,21 +143,21 @@ export default function DashboardPage() {
         ) : (
           <div className="portfolio-list">
             {portfolios.map((portfolio) => (
-              <Link
-                key={portfolio.id}
-                href={`/dashboard/portfolios/${portfolio.id}`}
-                className="portfolio-list-item"
-              >
+              <Link key={portfolio.id} href={`/dashboard/portfolios/${portfolio.id}`} className="portfolio-list-item">
                 <div className="portfolio-meta">
                   <strong>{portfolio.name}</strong>
-                  <small>
-                    {portfolio.base_currency} · Initial capital {formatCurrency(portfolio.initial_capital)}
-                  </small>
+                  <div className="portfolio-badges">
+                    <span className="badge neutral">{capitalize(portfolio.risk_category)}</span>
+                    <span className="badge neutral">
+                      {portfolio.holdings_count} holding{portfolio.holdings_count === 1 ? "" : "s"}
+                    </span>
+                    <span className="badge neutral">Cash {formatCurrency(portfolio.cash_balance)}</span>
+                  </div>
+                  {portfolio.latest_recommendation && (
+                    <small>Latest recommendation {formatDate(portfolio.latest_recommendation.created_at)}</small>
+                  )}
                 </div>
-                <div className="summary-row">
-                  <span className="badge neutral">Cash {formatCurrency(portfolio.cash_balance)}</span>
-                  <span className="utility-text">Open →</span>
-                </div>
+                <PortfolioValue portfolio={portfolio} />
               </Link>
             ))}
           </div>

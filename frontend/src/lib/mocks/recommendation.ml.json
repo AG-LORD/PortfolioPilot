@@ -8,6 +8,7 @@
   "return_model": "ml",
   "model_version": "mock-model-0.0.0",
   "forecast_as_of": "2026-01-01",
+  "forecast_source": "precomputed",
   "capital": "100000.00",
   "allocations": [
     {
@@ -16,7 +17,10 @@
       "target_weight": "0.1",
       "amount": "10000.00",
       "at_position_limit": true,
-      "source": "ml"
+      "source": "ml",
+      "clipped": false,
+      "drivers": [],
+      "typical_estimate": null
     },
     {
       "ticker": "MOCK_DELTA",
@@ -24,7 +28,10 @@
       "target_weight": "0.08",
       "amount": "8000.00",
       "at_position_limit": false,
-      "source": "historical"
+      "source": "historical",
+      "clipped": false,
+      "drivers": [],
+      "typical_estimate": null
     }
   ],
   "cash_weight": "0.82",

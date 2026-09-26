@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-import { apiFetch } from "@/lib/api";
+import { StockSelector } from "@/components/stocks/StockSelector";
+import { apiFetch, getAccessToken } from "@/lib/api";
 import { getErrorMessage } from "@/lib/errors";
+import { formatCurrency, formatPercent } from "@/lib/format";
 import { RISK_QUESTIONS, mapAnswersToRiskProfile, type RiskCategory } from "@/lib/riskMapping";
-import type { ReturnModel } from "@/lib/types/api";
+import { DEFAULT_SELECTION, isSelectionValid, saveSelection, type StockSelection } from "@/lib/stockSelection";
 
 type PortfolioDetails = {
   name: string;
@@ -14,19 +16,25 @@ type PortfolioDetails = {
   initial_capital: string;
 };
 
+type Step = 1 | 2 | 3 | 4;
+
 const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
-const stepLabels = ["Risk Profile", "Portfolio Details", "Investment Options", "Generate Recommendation"];
+const stepLabels = ["Risk", "Details", "Stocks", "Review"];
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
 
 export default function NewPortfolioPage() {
   const router = useRouter();
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<Step>(1);
   const [riskAnswers, setRiskAnswers] = useState<Record<string, RiskCategory>>({});
   const [details, setDetails] = useState<PortfolioDetails>({
     name: "",
     purpose: "",
     initial_capital: "",
   });
-  const [returnModel, setReturnModel] = useState<ReturnModel>("ml");
+  const [selection, setSelection] = useState<StockSelection>(DEFAULT_SELECTION);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -56,37 +64,30 @@ export default function NewPortfolioPage() {
   }
 
   async function handleCreate() {
-    if (!validateDetails()) return;
+    if (!riskProfile || !validateDetails() || !isSelectionValid(selection)) return;
 
     setSubmitting(true);
     setSubmitError(null);
 
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-
-    if (!session) {
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
       setSubmitError("You're signed out. Please log in again.");
       setSubmitting(false);
       return;
     }
 
-    const answers = RISK_QUESTIONS.map((q) => riskAnswers[q.id]);
-    const riskProfilePayload = mapAnswersToRiskProfile(answers);
-
     let riskProfileId: string;
     try {
-      const riskProfile = await apiFetch<{ id: string }>(
+      const created = await apiFetch<{ id: string }>(
         "/users/me/risk-profile",
-        session.access_token,
+        accessToken,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(riskProfilePayload),
+          body: JSON.stringify(riskProfile),
         },
       );
-      riskProfileId = riskProfile.id;
+      riskProfileId = created.id;
     } catch (err) {
       console.error("Failed to create risk profile:", err);
       setSubmitError(getErrorMessage(err, "We couldn't save your risk profile. Please try again."));
@@ -95,7 +96,7 @@ export default function NewPortfolioPage() {
     }
 
     try {
-      const portfolio = await apiFetch<{ id: string }>("/portfolios", session.access_token, {
+      const portfolio = await apiFetch<{ id: string }>("/portfolios", accessToken, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -106,7 +107,8 @@ export default function NewPortfolioPage() {
           risk_profile_id: riskProfileId,
         }),
       });
-      router.push(`/dashboard/portfolios/${portfolio.id}/recommendation?model=${returnModel}`);
+      saveSelection(portfolio.id, selection);
+      router.push(`/dashboard/portfolios/${portfolio.id}/recommendation?generate=1`);
     } catch (err) {
       console.error("Failed to create portfolio:", err);
       setSubmitError(
@@ -123,15 +125,15 @@ export default function NewPortfolioPage() {
           <span className="eyebrow">Portfolio creation</span>
           <h1 className="page-title">Create Portfolio</h1>
         </div>
+        <Link href="/dashboard" className="ghost-button">Cancel</Link>
       </header>
 
       <div className="card" style={{ padding: "26px" }}>
         <div className="stepper" aria-label="Portfolio creation steps">
           {stepLabels.map((label, index) => {
-            const currentStep = step === 1 ? 1 : 2;
-            const status = index + 1 < currentStep ? "done" : index + 1 === currentStep ? "active" : "";
+            const status = index + 1 < step ? "done" : index + 1 === step ? "active" : "";
             return (
-              <div key={label} className={`stepper-step ${status}`}>
+              <div key={label} className={`stepper-step ${status}`} aria-current={index + 1 === step ? "step" : undefined}>
                 <span className="stepper-number">{index + 1}</span>
                 <span>{label}</span>
               </div>
@@ -144,13 +146,13 @@ export default function NewPortfolioPage() {
             <div className="section-header" style={{ marginBottom: 0 }}>
               <div>
                 <span className="eyebrow">Step 1</span>
-                <h2 className="section-title">Risk Profile</h2>
+                <h2 className="section-title">Risk</h2>
               </div>
             </div>
 
             {RISK_QUESTIONS.map((q) => (
-              <fieldset key={q.id} style={{ border: "1px solid var(--border)", borderRadius: 20, padding: 18, background: "rgba(248,250,252,0.5)" }}>
-                <legend style={{ padding: "0 8px", fontWeight: 700, color: "var(--foreground)" }}>{q.text}</legend>
+              <fieldset key={q.id} className="risk-question">
+                <legend>{q.text}</legend>
                 <div className="option-grid">
                   {q.options.map((opt) => {
                     const selected = riskAnswers[q.id] === opt.value;
@@ -180,17 +182,17 @@ export default function NewPortfolioPage() {
 
             {riskProfile && (
               <div className="risk-profile-card" role="status">
-                <span className="eyebrow">Your Risk Profile</span>
-                <div className="risk-profile-name">{riskProfile.category.charAt(0).toUpperCase() + riskProfile.category.slice(1)}</div>
-                <div className="risk-profile-meta">
-                  Based on your responses, this portfolio is targeting a {riskProfile.target_volatility * 100}% annual volatility profile.
-                </div>
+                <span className="eyebrow">Your risk profile</span>
+                <div className="risk-profile-name">{capitalize(riskProfile.category)}</div>
+                <div className="risk-profile-meta">Max per stock {formatPercent(riskProfile.max_position_weight)}</div>
+                <div className="risk-profile-meta">Target volatility {formatPercent(riskProfile.target_volatility)}</div>
               </div>
             )}
 
             <div className="segmented-actions">
+              <Link href="/dashboard" className="secondary-button">Back</Link>
               <button type="button" className="primary-button" disabled={!allQuestionsAnswered} onClick={() => setStep(2)}>
-                Continue to portfolio details
+                Continue
               </button>
             </div>
           </div>
@@ -201,7 +203,7 @@ export default function NewPortfolioPage() {
             <div className="section-header" style={{ marginBottom: 0 }}>
               <div>
                 <span className="eyebrow">Step 2</span>
-                <h2 className="section-title">Portfolio Details</h2>
+                <h2 className="section-title">Details</h2>
               </div>
             </div>
 
@@ -228,7 +230,7 @@ export default function NewPortfolioPage() {
             </div>
 
             <div className="field-group">
-              <label className="field-label" htmlFor="portfolio-capital">Investment capital</label>
+              <label className="field-label" htmlFor="portfolio-capital">Investment capital (₹)</label>
               <div className="currency-field">
                 <span className="prefix">₹</span>
                 <input
@@ -244,35 +246,71 @@ export default function NewPortfolioPage() {
               )}
             </div>
 
-            <div className="panel" style={{ padding: "18px" }}>
-              <div className="section-header" style={{ marginBottom: 12 }}>
-                <div>
-                  <span className="eyebrow">Investment model</span>
-                  <h3 className="section-title" style={{ fontSize: "1.2rem" }}>Return model</h3>
-                </div>
+            <div className="segmented-actions">
+              <button type="button" className="secondary-button" onClick={() => setStep(1)}>
+                Back
+              </button>
+              <button type="button" className="primary-button" onClick={() => validateDetails() && setStep(3)}>
+                Continue
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="form-grid">
+            <div className="section-header" style={{ marginBottom: 0 }}>
+              <div>
+                <span className="eyebrow">Step 3</span>
+                <h2 className="section-title">Stocks</h2>
               </div>
-              <div className="option-grid">
-                {[
-                  { value: "ml", label: "Machine Learning", description: "Recommended for model-based forecasts" },
-                  { value: "historical", label: "Historical Baseline", description: "Uses historical returns when needed" },
-                ].map((model) => {
-                  const selected = returnModel === model.value;
-                  return (
-                    <button
-                      key={model.value}
-                      type="button"
-                      className={`option-card ${selected ? "selected" : ""}`}
-                      onClick={() => setReturnModel(model.value as ReturnModel)}
-                      style={{ textAlign: "left" }}
-                    >
-                      <span className="option-card-header">
-                        <span className="option-title">{model.label}</span>
-                        {selected && <span className="badge ml">Selected</span>}
-                      </span>
-                      <span className="option-body">{model.description}</span>
-                    </button>
-                  );
-                })}
+            </div>
+
+            <StockSelector value={selection} onChange={setSelection} maxPositionWeight={riskProfile?.max_position_weight} />
+
+            <div className="segmented-actions">
+              <button type="button" className="secondary-button" onClick={() => setStep(2)}>
+                Back
+              </button>
+              <button type="button" className="primary-button" disabled={!isSelectionValid(selection)} onClick={() => setStep(4)}>
+                Continue
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 4 && riskProfile && (
+          <div className="form-grid">
+            <div className="section-header" style={{ marginBottom: 0 }}>
+              <div>
+                <span className="eyebrow">Step 4</span>
+                <h2 className="section-title">Review</h2>
+              </div>
+            </div>
+
+            <div className="detail-grid">
+              <div className="detail-item">
+                <span className="detail-label">Risk profile</span>
+                <div className="detail-value">{capitalize(riskProfile.category)}</div>
+                <p className="field-hint">
+                  Max per stock {formatPercent(riskProfile.max_position_weight)} · Target volatility {formatPercent(riskProfile.target_volatility)}
+                </p>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">Portfolio</span>
+                <div className="detail-value">{details.name.trim()}</div>
+                <p className="field-hint">Capital {formatCurrency(details.initial_capital)}</p>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">Stocks</span>
+                <div className="detail-value">
+                  {selection.mode === "nifty50" ? "All NIFTY 50" : `${selection.tickers.length} stock${selection.tickers.length === 1 ? "" : "s"}`}
+                </div>
+                {selection.mode === "custom" && <p className="field-hint">{selection.tickers.join(", ")}</p>}
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">Method</span>
+                <div className="detail-value">ML-assisted analysis</div>
               </div>
             </div>
 
@@ -284,10 +322,10 @@ export default function NewPortfolioPage() {
             )}
 
             <div className="segmented-actions">
-              <button type="button" className="secondary-button" onClick={() => setStep(1)} disabled={submitting}>
+              <button type="button" className="secondary-button" onClick={() => setStep(3)} disabled={submitting}>
                 Back
               </button>
-              <button type="button" className="primary-button" onClick={handleCreate} disabled={submitting}>
+              <button type="button" className="primary-button" onClick={() => void handleCreate()} disabled={submitting}>
                 {submitting ? "Creating portfolio..." : "Create portfolio & generate recommendation"}
               </button>
             </div>

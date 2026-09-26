@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { apiFetch } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import { formatDate, formatPercent } from "@/lib/format";
 
 type EvaluationMetric = {
@@ -57,6 +57,7 @@ type EvaluationReport = {
 export default function ModelEvaluationPage() {
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notGenerated, setNotGenerated] = useState(false);
 
   useEffect(() => {
     const supabase = createClient();
@@ -71,12 +72,36 @@ export default function ModelEvaluationPage() {
       void apiFetch<EvaluationReport>("/ml/evaluation", session.access_token)
         .then(setReport)
         .catch((requestError: unknown) => {
+          if (requestError instanceof ApiError && requestError.status === 503) {
+            setNotGenerated(true);
+            return;
+          }
           console.error("Failed to load model evaluation:", requestError);
           setError(requestError instanceof Error ? requestError.message : "Evaluation results are unavailable.");
         });
     });
     return () => subscription.unsubscribe();
   }, []);
+
+  if (notGenerated) {
+    return (
+      <main className="page-shell">
+        <header className="page-header">
+          <div className="page-heading">
+            <span className="eyebrow">Research</span>
+            <h1 className="page-title">Model evaluation</h1>
+          </div>
+          <Link className="secondary-button" href="/dashboard">Back to dashboard</Link>
+        </header>
+        <div className="card list-card">
+          <div className="empty-state">
+            <div>🔬</div>
+            <p>No evaluation report has been generated yet. It is produced offline by the research team.</p>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (error) {
     return (
@@ -113,9 +138,9 @@ export default function ModelEvaluationPage() {
     <main className="page-shell">
       <header className="page-header">
         <div className="page-heading">
-          <span className="eyebrow">Offline research · generated {formatDate(report.generated_at)}</span>
+          <span className="eyebrow">Research</span>
           <h1 className="page-title">Model evaluation</h1>
-          <p className="page-subtitle">Historical forecast tests, separate from live portfolio recommendations.</p>
+          <p className="page-subtitle">Offline forecast tests generated {formatDate(report.generated_at)}, separate from live portfolio recommendations.</p>
         </div>
         <Link className="secondary-button" href="/dashboard">Back to dashboard</Link>
       </header>
