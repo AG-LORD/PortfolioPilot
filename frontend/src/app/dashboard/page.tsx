@@ -1,33 +1,84 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Plus } from "lucide-react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Sparkline } from "@/components/charts/Charts";
+import { ButtonLink } from "@/components/ui/Button";
+import { Toast } from "@/components/ui/Toast";
+import { Breadcrumbs, Notice, PageContainer, PageTitle, RiskBadge, Skeleton } from "@/components/ui/primitives";
 import { apiFetch } from "@/lib/api";
-import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
+import { cn } from "@/lib/cn";
 import { getErrorMessage } from "@/lib/errors";
+import { formatPercent, formatPrice, formatRelativeDay, moneySign } from "@/lib/format";
+import { createClient } from "@/lib/supabase/client";
 import type { PortfolioOverview, PortfolioOverviewItem } from "@/lib/types/api";
 
-function capitalize(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
+function PortfolioCard({ portfolio }: { portfolio: PortfolioOverviewItem }) {
+  // Value and P&L only when the backend could price every holding.
+  const valued = portfolio.valuation_status === "ok" && portfolio.total_value !== null;
+  const pnl = portfolio.unrealized_pnl === null ? null : Number(portfolio.unrealized_pnl);
+  // Amounts that round to ₹0.00 are neutral: no arrow, no colour.
+  const sign = pnl === null ? 0 : moneySign(pnl);
+  const sparkline = portfolio.sparkline.map(Number);
+
+  return (
+    <article className="flex flex-col rounded-lg border border-border bg-card p-5 shadow-sm transition hover:border-primary/40">
+      <div className="mb-7 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <h2 className="font-bold wrap-break-word">{portfolio.name}</h2>
+            <RiskBadge category={portfolio.risk_category} />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {portfolio.holdings_count} stock{portfolio.holdings_count === 1 ? "" : "s"} · Updated{" "}
+            {formatRelativeDay(portfolio.updated_at)}
+          </p>
+        </div>
+        <Sparkline values={sparkline} label={`${portfolio.name}: value over the last ${sparkline.length} snapshots`} />
+      </div>
+      <p className="text-xs text-muted-foreground">Current value</p>
+      {valued && portfolio.total_value !== null ? (
+        <>
+          <p className="mt-1 text-2xl font-bold tabular-nums">{formatPrice(portfolio.total_value)}</p>
+          {pnl !== null && (
+            <p
+              className={cn(
+                "mt-2 flex items-center gap-1 text-sm font-semibold",
+                sign > 0 && "text-success",
+                sign < 0 && "text-destructive",
+                sign === 0 && "text-muted-foreground",
+              )}
+            >
+              {sign > 0 && <ArrowUpRight size={15} aria-hidden="true" />}
+              {sign < 0 && <ArrowDownRight size={15} aria-hidden="true" />}
+              <span className="sr-only">{sign > 0 ? "Gain" : sign < 0 ? "Loss" : "Profit and loss"}:</span>
+              {formatPrice(sign === 0 ? 0 : Math.abs(pnl))}
+              {sign !== 0 &&
+                portfolio.unrealized_pnl_pct !== null &&
+                ` (${formatPercent(Math.abs(Number(portfolio.unrealized_pnl_pct)), 1)})`}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="mt-1 text-lg font-semibold text-muted-foreground">Value unavailable</p>
+      )}
+      <ButtonLink href={`/dashboard/portfolios/${portfolio.id}`} variant="outline" className="mt-auto w-full justify-between">
+        Open portfolio <ArrowRight size={16} aria-hidden="true" />
+      </ButtonLink>
+    </article>
+  );
 }
 
-function PortfolioValue({ portfolio }: { portfolio: PortfolioOverviewItem }) {
-  // Value and P&L only when the backend could price every holding; otherwise show nothing.
-  if (portfolio.valuation_status !== "ok" || portfolio.total_value === null) return null;
-  const pnl = portfolio.unrealized_pnl;
-  const pnlClass = pnl === null ? "" : Number(pnl) >= 0 ? "pnl-positive" : "pnl-negative";
-  return (
-    <div className="portfolio-meta" style={{ textAlign: "right" }}>
-      <strong>{formatCurrency(portfolio.total_value)}</strong>
-      {pnl !== null && (
-        <small className={pnlClass}>
-          P&amp;L {formatCurrency(pnl)}
-          {portfolio.unrealized_pnl_pct !== null && ` (${formatPercent(portfolio.unrealized_pnl_pct, 1)})`}
-        </small>
-      )}
-    </div>
-  );
+// Shown after a portfolio was deleted (the Current page redirects here with ?deleted=<name>).
+function DeletedToast() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const deleted = searchParams.get("deleted");
+  const dismiss = useCallback(() => router.replace("/dashboard", { scroll: false }), [router]);
+  if (!deleted) return null;
+  return <Toast message={`Deleted "${deleted}".`} onDismiss={dismiss} />;
 }
 
 export default function DashboardPage() {
@@ -59,110 +110,54 @@ export default function DashboardPage() {
     return () => subscription.unsubscribe();
   }, []);
 
-  if (error) {
-    return (
-      <main className="page-shell">
-        <div className="notice error" role="alert">
-          <span className="notice-icon">⚠</span>
-          <div>
-            <strong>Unable to load your portfolios</strong>
-            <p>{error}</p>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  if (!overview) {
-    return (
-      <main className="page-shell">
-        <div className="page-header">
-          <div className="page-heading">
-            <span className="eyebrow">Portfolio dashboard</span>
-            <h1 className="page-title">Your Portfolios</h1>
-          </div>
-        </div>
-        <div className="card list-card">
-          <div className="skeleton skeleton-box" />
-        </div>
-      </main>
-    );
-  }
-
-  const { totals, portfolios } = overview;
-  // The backend sums value only over portfolios it could price ("ok").
-  const valuedCount = totals.valued_portfolio_count ?? 0;
-  const hasValueTotal = valuedCount > 0 && totals.total_value !== null;
-
   return (
-    <main className="page-shell">
-      <header className="page-header">
-        <div className="page-heading">
-          <span className="eyebrow">Portfolio dashboard</span>
-          <h1 className="page-title">Your Portfolios</h1>
-        </div>
-        <Link href="/dashboard/new-portfolio" className="primary-button">
-          + Create Portfolio
-        </Link>
-      </header>
+    <PageContainer>
+      <Breadcrumbs />
+      <PageTitle
+        title="Your portfolios"
+        eyebrow="Overview"
+        action={
+          <ButtonLink href="/dashboard/new-portfolio">
+            <Plus size={17} aria-hidden="true" /> Create portfolio
+          </ButtonLink>
+        }
+      />
 
-      <section className={`metric-grid ${hasValueTotal ? "" : "metric-grid-3"}`} aria-label="Portfolio summary">
-        <article className="metric-card">
-          <span className="metric-label">Portfolios</span>
-          <strong className="metric-value">{totals.portfolio_count}</strong>
-        </article>
-        <article className="metric-card">
-          <span className="metric-label">Capital deposited</span>
-          <strong className="metric-value">{formatCurrency(totals.initial_capital)}</strong>
-        </article>
-        <article className="metric-card">
-          <span className="metric-label">Cash</span>
-          <strong className="metric-value">{formatCurrency(totals.cash_balance)}</strong>
-        </article>
-        {hasValueTotal && totals.total_value !== null && (
-          <article className="metric-card">
-            <span className="metric-label">
-              {valuedCount < totals.portfolio_count ? `Value (${valuedCount} of ${totals.portfolio_count} portfolios)` : "Value"}
+      {error && (
+        <Notice tone="error">
+          <strong>Unable to load your portfolios.</strong> {error}
+        </Notice>
+      )}
+
+      {!error && !overview && (
+        <div className="grid gap-5 lg:grid-cols-3">
+          <Skeleton className="h-72" />
+          <Skeleton className="h-72" />
+        </div>
+      )}
+
+      {overview && (
+        <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+          {overview.portfolios.map((portfolio) => (
+            <PortfolioCard key={portfolio.id} portfolio={portfolio} />
+          ))}
+          <Link
+            href="/dashboard/new-portfolio"
+            className="flex min-h-64 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card/40 p-5 text-center transition hover:border-primary/50"
+          >
+            <span className="mb-4 grid size-11 place-items-center rounded-full bg-muted text-muted-foreground">
+              <Plus size={20} aria-hidden="true" />
             </span>
-            <strong className="metric-value">{formatCurrency(totals.total_value)}</strong>
-          </article>
-        )}
-      </section>
-
-      <section className="card list-card">
-        <div className="section-header">
-          <h2 className="section-title">Current portfolios</h2>
+            <span className="font-semibold">
+              {overview.portfolios.length === 0 ? "Create your first portfolio" : "Create another portfolio"}
+            </span>
+            <span className="mt-1 max-w-52 text-sm text-muted-foreground">Try a different goal or risk profile.</span>
+          </Link>
         </div>
-
-        {portfolios.length === 0 ? (
-          <div className="empty-state">
-            <div>📊</div>
-            <strong>No portfolios yet</strong>
-            <p>Create your first portfolio to start generating recommendations.</p>
-          </div>
-        ) : (
-          <div className="portfolio-list">
-            {portfolios.map((portfolio) => (
-              <Link key={portfolio.id} href={`/dashboard/portfolios/${portfolio.id}`} className="portfolio-list-item">
-                <div className="portfolio-meta">
-                  <strong>{portfolio.name}</strong>
-                  <div className="portfolio-badges">
-                    <span className="badge neutral">{capitalize(portfolio.risk_category)}</span>
-                    <span className="badge neutral">
-                      {portfolio.holdings_count} holding{portfolio.holdings_count === 1 ? "" : "s"}
-                    </span>
-                    <span className="badge neutral">Cash {formatCurrency(portfolio.cash_balance)}</span>
-                  </div>
-                  {portfolio.latest_recommendation && (
-                    <small>Latest recommendation {formatDate(portfolio.latest_recommendation.created_at)}</small>
-                  )}
-                </div>
-                <PortfolioValue portfolio={portfolio} />
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
-    </main>
+      )}
+      <Suspense fallback={null}>
+        <DeletedToast />
+      </Suspense>
+    </PageContainer>
   );
 }

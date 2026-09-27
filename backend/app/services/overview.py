@@ -15,7 +15,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Holding, Portfolio, RecommendationSnapshot, RiskProfile
+from app.models import Holding, Portfolio, PortfolioSnapshot, RecommendationSnapshot, RiskProfile, Transaction
 from app.schemas.overview import OverviewTotals, PortfolioOverviewItem, PortfolioOverviewRead
 from app.schemas.recommendation import RecommendationSummary
 from app.services.market_data import MarketDataUnavailableError
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 VALUATION_OK = "ok"
 VALUATION_UNAVAILABLE = "unavailable"
+SPARKLINE_POINTS = 30
 
 
 def _latest_recommendations(db: Session, portfolio_ids: list[UUID]) -> dict[UUID, RecommendationSummary]:
@@ -40,6 +41,39 @@ def _latest_recommendations(db: Session, portfolio_ids: list[UUID]) -> dict[UUID
         if snapshot.portfolio_id not in latest:
             latest[snapshot.portfolio_id] = RecommendationSummary.model_validate(snapshot)
     return latest
+
+
+def _sparklines(db: Session, portfolio_ids: list[UUID]) -> dict[UUID, list[Decimal]]:
+    """total_value of each portfolio's last SPARKLINE_POINTS snapshots, oldest
+    first; portfolios with fewer than 2 snapshots are left out."""
+    if not portfolio_ids:
+        return {}
+    rows = db.execute(
+        select(PortfolioSnapshot.portfolio_id, PortfolioSnapshot.total_value)
+        .where(PortfolioSnapshot.portfolio_id.in_(portfolio_ids))
+        .order_by(PortfolioSnapshot.portfolio_id, PortfolioSnapshot.snapshot_date.desc())
+    ).all()
+    newest_first: dict[UUID, list[Decimal]] = {}
+    for portfolio_id, total_value in rows:
+        values = newest_first.setdefault(portfolio_id, [])
+        if len(values) < SPARKLINE_POINTS:
+            values.append(total_value)
+    return {pid: values[::-1] for pid, values in newest_first.items() if len(values) >= 2}
+
+
+def _deposits(db: Session, portfolio_ids: list[UUID]) -> dict[UUID, Decimal]:
+    """Net amount of every DEPOSIT transaction per portfolio (capital added after creation)."""
+    if not portfolio_ids:
+        return {}
+    rows = db.execute(
+        select(
+            Transaction.portfolio_id,
+            func.sum(Transaction.quantity * Transaction.price - Transaction.fees),
+        )
+        .where(Transaction.portfolio_id.in_(portfolio_ids), Transaction.transaction_type == "DEPOSIT")
+        .group_by(Transaction.portfolio_id)
+    ).all()
+    return {pid: Decimal(str(total)) for pid, total in rows if total is not None}
 
 
 def _sum_or_none(values: list[Decimal | None]) -> Decimal | None:
@@ -58,6 +92,8 @@ def get_portfolio_overview(db: Session, user_id: UUID) -> PortfolioOverviewRead:
     ).all()
 
     latest = _latest_recommendations(db, [portfolio.id for portfolio, _, _ in rows])
+    sparklines = _sparklines(db, [portfolio.id for portfolio, _, _ in rows])
+    deposits = _deposits(db, [portfolio.id for portfolio, _, _ in rows])
 
     portfolios = []
     for portfolio, category, holdings_count in rows:
@@ -90,6 +126,11 @@ def get_portfolio_overview(db: Session, user_id: UUID) -> PortfolioOverviewRead:
                 unrealized_pnl_pct=unrealized_pnl_pct,
                 holdings_count=holdings_count,
                 latest_recommendation=latest.get(portfolio.id),
+                total_deposited=portfolio.initial_capital + deposits.get(portfolio.id, Decimal("0")),
+                updated_at=portfolio.updated_at,
+                adopted_recommendation_id=portfolio.adopted_recommendation_id,
+                adopted_at=portfolio.adopted_at,
+                sparkline=sparklines.get(portfolio.id, []),
             )
         )
 

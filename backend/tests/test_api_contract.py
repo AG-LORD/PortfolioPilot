@@ -31,6 +31,10 @@ def test_openapi_exposes_contract_endpoints():
         ("/portfolios/{portfolio_id}/drift", "get"),
         ("/portfolios/{portfolio_id}/rebalance-proposals", "post"),
         ("/portfolios/{portfolio_id}/rebalance-proposals/{proposal_id}/execute", "post"),
+        ("/portfolios/{portfolio_id}/transactions/batch", "post"),
+        ("/portfolios/{portfolio_id}/recommendations/{recommendation_id}/adopt", "post"),
+        ("/portfolios/{portfolio_id}/recommendations/{recommendation_id}/history-preview", "get"),
+        ("/portfolios/{portfolio_id}/performance", "get"),
         ("/stocks/{ticker}/analysis", "get"),
         ("/backtests", "post"),
     }

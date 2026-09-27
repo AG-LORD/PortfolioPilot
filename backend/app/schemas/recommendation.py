@@ -6,6 +6,13 @@ from uuid import UUID
 from pydantic import BaseModel, model_validator
 
 ResponseReturnModel = Literal["historical", "ml"]
+# negative_estimate: expected_return <= 0; sector_limit: its sector's cap is
+# binding; risk_tradeoff: adds more risk than return for the profile's risk
+# aversion. risk_limit only appears on snapshots saved before the
+# mean-variance optimizer (it meant "positive estimate, left out").
+NotSelectedReason = Literal["negative_estimate", "sector_limit", "risk_tradeoff", "risk_limit"]
+# Why a selected stock did not get more weight; null when no limit is binding.
+LimitReason = Literal["position_limit", "sector_limit"]
 ForecastSource = Literal["precomputed", "on_request"]
 
 
@@ -43,6 +50,23 @@ class RecommendedAllocationItem(BaseModel):
     # ML-sourced tickers only; empty / null for historical fallbacks.
     drivers: list[AllocationDriverItem] = []
     typical_estimate: Decimal | None = None
+    # Display label from app/data/sectors.json; null when unknown.
+    sector: str | None = None
+    # The shrunk estimate the optimizer used (expected_return is the model's own
+    # estimate); null on snapshots saved before shrinkage.
+    expected_return_used: Decimal | None = None
+    limit_reason: LimitReason | None = None
+
+
+class NotSelectedItem(BaseModel):
+    """An eligible ticker (usable estimate) that the optimizer gave zero weight."""
+
+    ticker: str
+    sector: str | None = None
+    expected_return: Decimal
+    source: ResponseReturnModel
+    reason: NotSelectedReason
+    expected_return_used: Decimal | None = None
 
 
 class ExcludedTickerItem(BaseModel):
@@ -53,6 +77,8 @@ class ExcludedTickerItem(BaseModel):
 class RecommendationConstraintsRead(BaseModel):
     max_position_weight: Decimal
     target_volatility: Decimal
+    # The profile's sector cap (enforced by the optimizer); null if unknown.
+    max_sector_weight: Decimal | None = None
 
 
 class RecommendationRead(BaseModel):
@@ -74,6 +100,8 @@ class RecommendationRead(BaseModel):
     expected_portfolio_volatility: Decimal
     constraints: RecommendationConstraintsRead
     excluded: list[ExcludedTickerItem]
+    # Null for snapshots saved before this field existed (unknown), [] when none were left out.
+    not_selected: list[NotSelectedItem] | None = None
 
     model_config = {"from_attributes": True}
 

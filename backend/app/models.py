@@ -125,6 +125,20 @@ class Portfolio(Base):
         nullable=False,
     )
 
+    # The recommendation the user chose to follow. Drift and rebalance
+    # proposals target it when set, else the latest recommendation.
+    # use_alter: portfolios and recommendation_snapshots reference each other.
+    adopted_recommendation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "recommendation_snapshots.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_portfolios_adopted_recommendation_id",
+        ),
+        nullable=True,
+    )
+    adopted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -287,6 +301,8 @@ class RecommendationSnapshot(Base):
     target_volatility: Mapped[Decimal] = mapped_column(Numeric(8, 6), nullable=False)
     allocations: Mapped[dict] = mapped_column(JSON, nullable=False)
     excluded: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Eligible tickers the optimizer gave zero weight; null on older snapshots.
+    not_selected: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class RebalanceProposal(Base):

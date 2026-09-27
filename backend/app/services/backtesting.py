@@ -20,7 +20,7 @@ from app.services.expected_returns import InsufficientHistoryError, ledoit_wolf_
 from app.services.features import DEFAULT_HORIZON, FEATURE_SET_VERSION, build_panel_from_prices
 from app.services.market_calendar import ANNUALIZATION_FACTOR
 from app.services.market_data import MarketDataUnavailableError
-from app.services.optimization import OptimizationError, optimize_target_weights
+from app.services.optimization import MAX_RETURN, OptimizationError, optimize_target_weights
 from app.services.universe import CUSTOM_UNIVERSE, Universe, get_universe, normalize_tickers
 
 _ZERO = Decimal("0")
@@ -79,6 +79,10 @@ def _weights_at_signal(
         covariance=covariance,
         max_position_weight=max_position_weight,
         target_volatility=target_volatility,
+        # Backtest requests carry no risk profile (so no risk aversion or sector
+        # cap): they keep the original max-return objective without shrinkage.
+        objective=MAX_RETURN,
+        shrinkage_alpha=1.0,
     )
     return (
         {item.ticker: item.target_weight for item in allocation.allocations},

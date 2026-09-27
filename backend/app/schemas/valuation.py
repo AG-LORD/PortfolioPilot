@@ -11,6 +11,7 @@ class HoldingValuation(BaseModel):
     current_price: Decimal
     market_value: Decimal
     unrealized_pnl: Decimal
+    sector: str | None = None
 
 
 class PortfolioValuation(BaseModel):

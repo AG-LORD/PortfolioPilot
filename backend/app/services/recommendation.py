@@ -27,11 +27,15 @@ from app.services.features import DEFAULT_HORIZON
 from app.services.market_calendar import MARKET_TIMEZONE, latest_completed_trading_weekday
 from app.services.ml_forecasts import load_stored_forecasts
 from app.services.optimization import (
+    MEAN_VARIANCE,
     OptimizationError,
     TargetAllocationResult,
     optimize_target_weights,
+    risk_aversion_for,
+    sector_map_for,
 )
 from app.services.portfolios import get_portfolio
+from app.services.sectors import get_sector
 from app.services.return_providers import (
     HISTORICAL,
     ML,
@@ -48,6 +52,16 @@ METRIC_DECIMALS = 6
 # Matches the optimizer's feasibility tolerance.
 POSITION_LIMIT_TOLERANCE = Decimal("0.0001")
 
+# Why an eligible ticker got zero weight.
+NEGATIVE_ESTIMATE = "negative_estimate"  # expected_return <= 0: holding cash beats it
+SECTOR_LIMIT = "sector_limit"  # its sector's max_sector_weight cap is binding
+RISK_TRADEOFF = "risk_tradeoff"  # adds more risk than return for the profile's risk aversion
+# Reason stored by snapshots saved before the mean-variance optimizer; still readable.
+RISK_LIMIT = "risk_limit"
+
+# Why a selected ticker did not get more weight (None when no limit is binding).
+POSITION_LIMIT = "position_limit"
+
 
 @dataclass
 class RecommendedAllocation:
@@ -60,6 +74,21 @@ class RecommendedAllocation:
     clipped: bool = False  # ML forecast capped to the training-label range
     drivers: list[Driver] = field(default_factory=list)  # ML tickers only
     typical_estimate: Decimal | None = None  # ML tickers only
+    sector: str | None = None  # display label from sectors.json
+    expected_return_used: Decimal | None = None  # shrunk estimate the optimizer used
+    limit_reason: str | None = None  # POSITION_LIMIT / SECTOR_LIMIT / None
+
+
+@dataclass
+class NotSelectedTicker:
+    """An eligible ticker (it had a usable estimate) that the optimizer gave zero weight."""
+
+    ticker: str
+    expected_return: Decimal
+    source: str
+    reason: str
+    sector: str | None = None
+    expected_return_used: Decimal | None = None
 
 
 @dataclass
@@ -70,12 +99,14 @@ class SizedAllocation:
     cash_amount: Decimal
     expected_portfolio_return: Decimal
     expected_portfolio_volatility: Decimal
+    not_selected: list[NotSelectedTicker] = field(default_factory=list)
 
 
 @dataclass
 class RecommendationConstraints:
     max_position_weight: Decimal
     target_volatility: Decimal
+    max_sector_weight: Decimal | None = None
 
 
 @dataclass
@@ -94,6 +125,7 @@ class Recommendation:
     model_version: str | None = None
     forecast_as_of: date | None = None
     forecast_source: str | None = None  # "precomputed" / "on_request"; None if historical only
+    not_selected: list[NotSelectedTicker] = field(default_factory=list)
     id: UUID | None = None
     created_at: datetime | None = None
 
@@ -109,7 +141,8 @@ def size_allocation(
     drivers: dict[str, list[Driver]] | None = None,
     typical_estimates: dict[str, Decimal] | None = None,
 ) -> SizedAllocation:
-    """Zero-weight tickers are omitted from the returned allocations.
+    """Zero-weight tickers are omitted from the returned allocations and
+    listed in not_selected instead.
     `sources` maps a ticker to the provider of its expected return
     (default: historical); clipped/drivers/typical_estimates carry the ML
     provider's per-ticker diagnostics (default: none)."""
@@ -125,6 +158,22 @@ def size_allocation(
     portfolio_return = float(w @ mu)
     portfolio_vol = math.sqrt(max(float(w @ sigma @ w), 0.0))
 
+    binding = target.binding_sectors
+
+    def limit_reason(a) -> str | None:
+        if abs(a.target_weight - max_position_weight) <= POSITION_LIMIT_TOLERANCE:
+            return POSITION_LIMIT
+        if a.sector_group is not None and a.sector_group in binding:
+            return SECTOR_LIMIT
+        return None
+
+    def not_selected_reason(a) -> str:
+        if a.expected_return <= 0:
+            return NEGATIVE_ESTIMATE
+        if a.sector_group is not None and a.sector_group in binding:
+            return SECTOR_LIMIT
+        return RISK_TRADEOFF
+
     allocations = [
         RecommendedAllocation(
             ticker=a.ticker,
@@ -136,9 +185,24 @@ def size_allocation(
             clipped=clipped.get(a.ticker, False),
             drivers=list(drivers.get(a.ticker, [])),
             typical_estimate=typical_estimates.get(a.ticker),
+            sector=get_sector(a.ticker),
+            expected_return_used=a.expected_return_used,
+            limit_reason=limit_reason(a),
         )
         for a in target.allocations
         if a.target_weight != 0
+    ]
+    not_selected = [
+        NotSelectedTicker(
+            ticker=a.ticker,
+            expected_return=a.expected_return,
+            source=sources.get(a.ticker, HISTORICAL),
+            reason=not_selected_reason(a),
+            sector=get_sector(a.ticker),
+            expected_return_used=a.expected_return_used,
+        )
+        for a in target.allocations
+        if a.target_weight == 0
     ]
     cash_amount = capital - sum((a.amount for a in allocations), Decimal("0"))
 
@@ -149,6 +213,7 @@ def size_allocation(
         cash_amount=cash_amount,
         expected_portfolio_return=Decimal(str(round(portfolio_return, METRIC_DECIMALS))),
         expected_portfolio_volatility=Decimal(str(round(portfolio_vol, METRIC_DECIMALS))),
+        not_selected=not_selected,
     )
 
 
@@ -195,6 +260,10 @@ def get_portfolio_recommendation(
         covariance=data.inputs.covariance,
         max_position_weight=risk_profile.max_position_weight,
         target_volatility=risk_profile.target_volatility,
+        max_sector_weight=risk_profile.max_sector_weight,
+        sector_map=sector_map_for(data.inputs.tickers),
+        objective=MEAN_VARIANCE,
+        risk_aversion=risk_aversion_for(risk_profile.category),
     )
 
     sized = size_allocation(
@@ -226,8 +295,10 @@ def get_portfolio_recommendation(
         constraints=RecommendationConstraints(
             max_position_weight=risk_profile.max_position_weight,
             target_volatility=risk_profile.target_volatility,
+            max_sector_weight=risk_profile.max_sector_weight,
         ),
         excluded=data.excluded,
+        not_selected=sized.not_selected,
     )
 
 
@@ -261,12 +332,24 @@ def persist_recommendation_snapshot(db: Session, portfolio_id: UUID, recommendat
                     for d in item.drivers
                 ],
                 "typical_estimate": None if item.typical_estimate is None else str(item.typical_estimate),
+                "expected_return_used": None if item.expected_return_used is None else str(item.expected_return_used),
+                "limit_reason": item.limit_reason,
             }
             for item in recommendation.allocations
         ],
         excluded=[
             {"ticker": item.ticker, "reason": item.reason}
             for item in recommendation.excluded
+        ],
+        not_selected=[
+            {
+                "ticker": item.ticker,
+                "expected_return": str(item.expected_return),
+                "source": item.source,
+                "reason": item.reason,
+                "expected_return_used": None if item.expected_return_used is None else str(item.expected_return_used),
+            }
+            for item in recommendation.not_selected
         ],
     )
     db.add(snapshot)

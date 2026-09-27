@@ -13,6 +13,7 @@ from app.schemas.rebalance import (
     RebalanceWeightRead,
 )
 from app.services import market_data
+from app.services.plans import is_target_stale, plan_target
 from app.services.portfolios import get_portfolio
 
 ZERO = Decimal("0")
@@ -65,19 +66,16 @@ def create_rebalance_proposal(
 ) -> RebalanceProposalRead:
     portfolio = get_portfolio(db, user_id, portfolio_id)
     if recommendation_id is None:
-        target = db.scalars(
-            select(RecommendationSnapshot)
-            .where(RecommendationSnapshot.portfolio_id == portfolio_id)
-            .order_by(RecommendationSnapshot.created_at.desc())
-            .limit(1)
-        ).first()
+        # The adopted plan when set, else the latest recommendation.
+        target, adopted = plan_target(db, portfolio)
     else:
         target = db.get(RecommendationSnapshot, recommendation_id)
         if target is not None and target.portfolio_id != portfolio_id:
             target = None
+        adopted = target is not None and target.id == portfolio.adopted_recommendation_id
     if target is None:
         raise ValueError("A saved recommendation is required before proposing rebalancing")
-    if portfolio.updated_at > target.created_at:
+    if is_target_stale(portfolio, target, adopted):
         raise ValueError("The saved target is stale; generate a new recommendation first")
 
     holdings = db.scalars(

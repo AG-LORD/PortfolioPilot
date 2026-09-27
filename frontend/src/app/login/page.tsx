@@ -3,6 +3,9 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AUTH_INPUT, AuthField, AuthShell } from "@/components/auth/AuthShell";
+import { Button } from "@/components/ui/Button";
+import { Notice } from "@/components/ui/primitives";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
@@ -41,34 +44,45 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="auth-shell">
-      <div className="auth-panel">
-        <div className="page-heading">
-          <h1 className="page-title">Welcome back</h1>
-          <p className="page-subtitle">Log in to manage your portfolios.</p>
-        </div>
-        <form onSubmit={handleSubmit} className="auth-form">
-          <label className="field-group">
-            <span className="field-label">Email</span>
-            <input className="text-input" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          <label className="field-group">
-            <span className="field-label">Password</span>
-            <input className="text-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          </label>
-          <button type="submit" className="primary-button">Log in</button>
-        </form>
-        {error && <div className="notice error" role="alert">{error}</div>}
+    <AuthShell
+      title="Welcome back"
+      subtitle="Log in to manage your portfolios."
+      footer={
+        <>
+          New to PortfolioPilot?{" "}
+          <Link href="/register" className="font-semibold text-primary hover:underline">
+            Create an account
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <AuthField label="Email">
+          <input
+            className={AUTH_INPUT}
+            type="email"
+            autoComplete="email"
+            placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </AuthField>
+        <AuthField label="Password">
+          <input className={AUTH_INPUT} type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        </AuthField>
+        <Button type="submit" className="w-full">
+          Log in
+        </Button>
+      </form>
+      <div className="mt-4 space-y-3">
+        {error && <Notice tone="error">{error}</Notice>}
         {error === "Email not confirmed" && (
-          <button type="button" className="secondary-button" onClick={() => void resendConfirmation()}>
+          <Button variant="outline" className="w-full" onClick={() => void resendConfirmation()}>
             Resend confirmation email
-          </button>
+          </Button>
         )}
-        {message && <div className="notice success" role="status">{message}</div>}
-        <p className="auth-switch">
-          New to PortfolioPilot? <Link href="/register">Create an account</Link>
-        </p>
+        {message && <Notice tone="success">{message}</Notice>}
       </div>
-    </main>
+    </AuthShell>
   );
 }

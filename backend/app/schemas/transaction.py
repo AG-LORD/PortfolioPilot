@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -20,6 +20,18 @@ class TransactionCreate(BaseModel):
         if value is not None and value.utcoffset() is None:
             raise ValueError("occurred_at must include a timezone")
         return value
+
+
+class BatchTradeItem(BaseModel):
+    side: Literal["BUY", "SELL"]
+    ticker: str = Field(max_length=20)
+    quantity: Decimal = Field(gt=0)
+    price: Decimal = Field(ge=0)
+    fees: Decimal = Field(default=Decimal("0"), ge=0)
+
+
+# 1 to 50 trades recorded atomically.
+BatchTradeRequest = Annotated[list[BatchTradeItem], Field(min_length=1, max_length=50)]
 
 
 class TransactionRead(BaseModel):

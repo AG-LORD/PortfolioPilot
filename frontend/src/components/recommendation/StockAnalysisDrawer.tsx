@@ -1,8 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
+import { PriceAreaChart } from "@/components/charts/Charts";
+import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
+import { Metric, Notice, Skeleton } from "@/components/ui/primitives";
 import { apiFetch, getAccessToken } from "@/lib/api";
-import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
+import { cn } from "@/lib/cn";
+import { getErrorMessage } from "@/lib/errors";
+import { formatDate, formatPercent, formatPrice } from "@/lib/format";
 import type { AllocationDriver } from "@/lib/types/api";
 
 type StockAnalysis = {
@@ -64,6 +71,7 @@ const INDICATORS: Record<string, IndicatorInfo> = {
 };
 
 const UNKNOWN_INDICATOR_DEFINITION = "Technical input used by the model.";
+const TOP_DRIVERS = 5;
 
 function formatIndicator(name: string, value: string): string {
   const info = INDICATORS[name];
@@ -74,8 +82,6 @@ function formatIndicator(name: string, value: string): string {
 function percentOrDash(value: string | null, fallback = "—") {
   return value === null ? fallback : formatPercent(value, 1);
 }
-
-const TOP_DRIVERS = 5;
 
 function signedPercent(value: string) {
   return `${Number(value) > 0 ? "+" : ""}${formatPercent(value, 1)}`;
@@ -96,37 +102,49 @@ function WhyThisEstimate({
   const largest = Math.max(...shown.map((d) => Math.abs(Number(d.contribution))), 0) || 1;
 
   return (
-    <section className="stock-analysis-block">
-      <h3>Why this estimate</h3>
+    <section className="mt-7">
+      <h3 className="font-bold">Why this estimate</h3>
       {typicalEstimate !== null && (
-        <p className="utility-text">A stock with typical inputs would be estimated at {formatPercent(typicalEstimate, 1)}.</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          A stock with typical inputs would be estimated at {formatPercent(typicalEstimate, 1)}.
+        </p>
       )}
       {clipped && (
-        <p className="utility-text">The estimate was capped; the contributions explain the model&apos;s raw estimate before capping.</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          The estimate was capped; the contributions explain the model&apos;s raw estimate before capping.
+        </p>
       )}
-      <ul className="driver-list">
+      <ul className="mt-3 space-y-2">
         {shown.map((driver) => {
           const contribution = Number(driver.contribution);
-          const direction = contribution > 0 ? "positive" : contribution < 0 ? "negative" : "zero";
+          const positive = contribution > 0;
+          const negative = contribution < 0;
+          const width = `${(Math.abs(contribution) / largest) * 50}%`;
           return (
-            <li key={driver.feature} className="driver-row">
-              <span className="driver-label">{INDICATORS[driver.feature]?.label ?? driver.feature.replaceAll("_", " ")}</span>
-              <span className="driver-value">{formatIndicator(driver.feature, driver.value)}</span>
-              <span className={`driver-contribution ${direction}`}>{signedPercent(driver.contribution)}</span>
-              <span className="driver-bar-track" aria-hidden="true">
+            <li key={driver.feature} className="rounded-md border border-border p-3">
+              <div className="flex items-baseline justify-between gap-3 text-sm">
+                <span className="font-semibold">{INDICATORS[driver.feature]?.label ?? driver.feature.replaceAll("_", " ")}</span>
+                <span className={cn("font-semibold tabular-nums", positive && "text-success", negative && "text-destructive")}>
+                  {signedPercent(driver.contribution)}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">Value {formatIndicator(driver.feature, driver.value)}</p>
+              {/* Centred track: positive bars grow right, negative bars grow left. */}
+              <div className="relative mt-2 h-1.5 rounded-full bg-muted" aria-hidden="true">
+                <span className="absolute inset-y-0 left-1/2 w-px bg-border" />
                 <span
-                  className={`driver-bar ${direction}`}
-                  style={{ width: `${(Math.abs(contribution) / largest) * 50}%` }}
+                  className={cn("absolute inset-y-0 rounded-full", positive ? "left-1/2 bg-success" : "right-1/2 bg-destructive")}
+                  style={{ width }}
                 />
-              </span>
+              </div>
             </li>
           );
         })}
       </ul>
       {drivers.length > TOP_DRIVERS && (
-        <button type="button" className="next-step-link driver-toggle" onClick={() => setShowAll((value) => !value)}>
+        <Button variant="ghost" size="sm" className="mt-2" onClick={() => setShowAll((value) => !value)}>
           {showAll ? `Show top ${TOP_DRIVERS}` : `Show all ${drivers.length}`}
-        </button>
+        </Button>
       )}
     </section>
   );
@@ -134,6 +152,9 @@ function WhyThisEstimate({
 
 type Props = {
   ticker: string;
+  sector?: string | null;
+  // "selected": in the plan; "not_selected": considered but left out.
+  mode: "selected" | "not_selected";
   portfolioId: string;
   recommendationId?: string;
   // From the recommendation response; the drawer never refetches them.
@@ -143,46 +164,20 @@ type Props = {
   onClose: () => void;
 };
 
-function StockCandlestickChart({ prices }: { prices: StockAnalysis["historical_prices"] }) {
-  const candles = prices.slice(-90);
-  const highest = Math.max(...candles.map((item) => Number(item.high)));
-  const lowest = Math.min(...candles.map((item) => Number(item.low)));
-  const range = highest - lowest || 1;
-  const step = 720 / Math.max(candles.length, 1);
-  const y = (value: string) => 12 + ((highest - Number(value)) / range) * 150;
-
-  return (
-    <svg className="stock-candlestick-chart" viewBox="0 0 740 180" role="img" aria-label={`${candles.length} most recent adjusted daily candlesticks`}>
-      {[12, 87, 162].map((gridY) => <line key={gridY} x1="8" x2="732" y1={gridY} y2={gridY} style={{ stroke: "var(--border)" }} strokeDasharray="3 5" />)}
-      {candles.map((candle, index) => {
-        const x = 10 + index * step + step / 2;
-        const openY = y(candle.open);
-        const closeY = y(candle.close);
-        const rising = Number(candle.close) >= Number(candle.open);
-        const color = rising ? "var(--success)" : "var(--danger)";
-        return (
-          <g key={candle.date}>
-            <line x1={x} x2={x} y1={y(candle.high)} y2={y(candle.low)} style={{ stroke: color }} strokeWidth="1.2" />
-            <rect
-              x={x - Math.max(1, step * 0.28)}
-              y={Math.min(openY, closeY)}
-              width={Math.max(2, step * 0.56)}
-              height={Math.max(1.5, Math.abs(openY - closeY))}
-              style={{ fill: rising ? color : "var(--surface)", stroke: color }}
-              strokeWidth="1.1"
-            />
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-export function StockAnalysisDrawer({ ticker, portfolioId, recommendationId, drivers = [], typicalEstimate = null, clipped = false, onClose }: Props) {
+export function StockAnalysisDrawer({
+  ticker,
+  sector,
+  mode,
+  portfolioId,
+  recommendationId,
+  drivers = [],
+  typicalEstimate = null,
+  clipped = false,
+  onClose,
+}: Props) {
   const hasDrivers = drivers.length > 0;
-  const [stockAnalysis, setStockAnalysis] = useState<StockAnalysis | null>(null);
-  const [stockAnalysisLoading, setStockAnalysisLoading] = useState(false);
-  const [stockAnalysisError, setStockAnalysisError] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<StockAnalysis | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,24 +185,17 @@ export function StockAnalysisDrawer({ ticker, portfolioId, recommendationId, dri
       const accessToken = await getAccessToken();
       if (cancelled) return;
       if (!accessToken) {
-        setStockAnalysisError("You are signed out. Please log in again.");
+        setError("You are signed out. Please log in again.");
         return;
       }
-
       const query = new URLSearchParams({ portfolio_id: portfolioId });
       if (recommendationId) query.set("recommendation_id", recommendationId);
       try {
-        setStockAnalysisLoading(true);
-        const details = await apiFetch<StockAnalysis>(
-          `/stocks/${encodeURIComponent(ticker)}/analysis?${query.toString()}`,
-          accessToken,
-        );
-        if (!cancelled) setStockAnalysis(details);
+        const details = await apiFetch<StockAnalysis>(`/stocks/${encodeURIComponent(ticker)}/analysis?${query.toString()}`, accessToken);
+        if (!cancelled) setAnalysis(details);
       } catch (err) {
         console.error("Failed to load stock analysis:", err);
-        if (!cancelled) setStockAnalysisError(err instanceof Error ? err.message : "Stock analysis is unavailable.");
-      } finally {
-        if (!cancelled) setStockAnalysisLoading(false);
+        if (!cancelled) setError(getErrorMessage(err, "Stock analysis is unavailable."));
       }
     }
     void load();
@@ -216,90 +204,135 @@ export function StockAnalysisDrawer({ ticker, portfolioId, recommendationId, dri
     };
   }, [ticker, portfolioId, recommendationId]);
 
+  const prices = (analysis?.historical_prices ?? []).slice(-90).map((p) => ({ date: p.date, close: Number(p.close) }));
+
   return (
-    <div className="stock-drawer-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside
-        className="stock-analysis-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="stock-analysis-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="stock-drawer-header">
+    <Modal open onClose={onClose} labelledBy="stock-analysis-title" variant="sheet">
+      <div className="h-full overflow-y-auto p-6">
+        <div className="flex items-start justify-between gap-3">
           <div>
-            <span className="eyebrow">Evidence</span>
-            <h2 id="stock-analysis-title">{ticker} — evidence</h2>
-          </div>
-          <button type="button" className="stock-drawer-close" aria-label="Close evidence" onClick={onClose}>×</button>
-        </header>
-        {stockAnalysisLoading && <p className="utility-text">Loading adjusted price history and indicators...</p>}
-        {stockAnalysisError && <div className="notice error" role="alert">{stockAnalysisError}</div>}
-        {stockAnalysis && (
-          <div className="stock-analysis-content">
-            <div className="stock-analysis-summary">
-              <div><span>Current quote</span><strong>{stockAnalysis.current_price === null ? "Unavailable" : formatCurrency(stockAnalysis.current_price)}</strong></div>
-              <div><span>Latest adjusted close</span><strong>{formatCurrency(stockAnalysis.latest_close)}</strong><small>{formatDate(stockAnalysis.latest_close_date)}</small></div>
-            </div>
-            {!stockAnalysis.current_quote_available && <p className="notice warning">Current quote unavailable; the evidence below uses adjusted daily history through the latest completed market date.</p>}
-            <p className="notice info">
-              {hasDrivers
-                ? "Contributions are approximate: each shows how the estimate changes if that input were typical. They explain the model, not the market."
-                : "These are the inputs the model uses. The model does not yet report how much each input contributed to this estimate."}
+            <p className="text-xs font-bold uppercase tracking-widest text-primary">
+              {mode === "selected" ? "Why it is in your plan" : "Why it was left out"}
             </p>
-            <section className="stock-analysis-block">
-              <h3>Model estimate</h3>
-              <dl className="stock-analysis-metrics">
-                <div><dt>Estimated annual return</dt><dd>{percentOrDash(stockAnalysis.expected_return_annual, "Not available")}</dd></div>
-                <div>
-                  <dt>Source</dt>
-                  <dd>{stockAnalysis.expected_return_source === null ? "—" : stockAnalysis.expected_return_source === "ml" ? "ML forecast" : "Historical fallback"}</dd>
-                </div>
-                <div><dt>Model version</dt><dd>{stockAnalysis.model_version ?? "—"}</dd></div>
-                <div><dt>Target weight</dt><dd>{percentOrDash(stockAnalysis.target_weight, "Not in this recommendation")}</dd></div>
-                {stockAnalysis.current_weight !== null && (
-                  <div><dt>Current weight in your portfolio</dt><dd>{percentOrDash(stockAnalysis.current_weight)}</dd></div>
-                )}
-              </dl>
-              <p className="utility-text">Model estimate from past market data. Not a guarantee or prediction of actual returns.</p>
-            </section>
-            {hasDrivers && <WhyThisEstimate drivers={drivers} typicalEstimate={typicalEstimate} clipped={clipped} />}
-            <section className="stock-analysis-block">
-              <h3>Recent performance</h3>
-              <dl className="stock-analysis-metrics">
-                <div><dt>20-session return</dt><dd>{percentOrDash(stockAnalysis.return_20d)}</dd></div>
-                <div><dt>60-session return</dt><dd>{percentOrDash(stockAnalysis.return_60d)}</dd></div>
-                <div><dt>252-session return</dt><dd>{percentOrDash(stockAnalysis.return_252d)}</dd></div>
-                <div><dt>Annualized volatility</dt><dd>{percentOrDash(stockAnalysis.annualized_volatility_252d)}</dd></div>
-              </dl>
-            </section>
-            <section className="stock-analysis-block">
-              <h3>Model inputs (technical indicators) · latest close {formatDate(stockAnalysis.latest_close_date)}</h3>
-              <p className="utility-text">These values describe the latest available history; they are not the saved point-in-time inputs for an older recommendation.</p>
-              {Object.keys(stockAnalysis.technical_indicators).length === 0 ? (
-                <p className="utility-text">Not enough adjusted history to calculate indicators.</p>
-              ) : (
-                <dl className="indicator-list">
-                  {Object.entries(stockAnalysis.technical_indicators).map(([name, value]) => (
-                    <div key={name}>
-                      <dt>{INDICATORS[name]?.label ?? name.replaceAll("_", " ")}</dt>
-                      <dd>{formatIndicator(name, value)}</dd>
-                      <p>{INDICATORS[name]?.definition ?? UNKNOWN_INDICATOR_DEFINITION}</p>
-                    </div>
-                  ))}
-                </dl>
-              )}
-            </section>
-            {stockAnalysis.historical_prices.length > 0 ? (
-              <section className="stock-analysis-block">
-                <h3>Adjusted daily price · latest 90 sessions</h3>
-                <StockCandlestickChart prices={stockAnalysis.historical_prices} />
-              </section>
-            ) : (
-              <p className="empty-state">No historical prices are available for this ticker.</p>
-            )}
+            <h2 id="stock-analysis-title" className="mt-2 text-2xl font-bold">
+              {ticker}
+            </h2>
+            {sector && <p className="text-sm text-muted-foreground">{sector}</p>}
+          </div>
+          <Button variant="ghost" size="icon" aria-label="Close details" onClick={onClose}>
+            <X size={18} aria-hidden="true" />
+          </Button>
+        </div>
+
+        {error && (
+          <div className="mt-6">
+            <Notice tone="error">{error}</Notice>
           </div>
         )}
-      </aside>
-    </div>
+        {!error && !analysis && (
+          <div className="mt-7 space-y-3">
+            <Skeleton className="h-24" />
+            <Skeleton className="h-44" />
+          </div>
+        )}
+
+        {analysis && (
+          <>
+            <div className="mt-7 grid grid-cols-2 gap-3">
+              <Metric
+                label="Estimated return"
+                value={percentOrDash(analysis.expected_return_annual, "n/a")}
+                note={
+                  analysis.expected_return_source === null
+                    ? undefined
+                    : analysis.expected_return_source === "ml"
+                      ? "ML forecast"
+                      : "Historical fallback"
+                }
+                info="A model estimate from past market data, not a guaranteed return."
+              />
+              <Metric
+                label="Portfolio weight"
+                value={percentOrDash(analysis.target_weight, "0%")}
+                note={analysis.current_weight !== null ? `You hold ${formatPercent(analysis.current_weight, 1)} now` : undefined}
+              />
+            </div>
+
+            {!analysis.current_quote_available && (
+              <p className="mt-4 text-xs text-muted-foreground">
+                Current quote unavailable; figures use adjusted daily history through {formatDate(analysis.latest_close_date)}.
+              </p>
+            )}
+
+            {prices.length > 1 && (
+              <section className="mt-7">
+                <h3 className="font-bold">Recent price movement</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Adjusted daily close, latest 90 sessions · last {formatPrice(analysis.latest_close)} on {formatDate(analysis.latest_close_date)}
+                </p>
+                <div className="mt-3">
+                  <PriceAreaChart points={prices} />
+                </div>
+              </section>
+            )}
+
+            {hasDrivers && <WhyThisEstimate drivers={drivers} typicalEstimate={typicalEstimate} clipped={clipped} />}
+            {hasDrivers && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Contributions are approximate: each shows how the estimate changes if that input were typical. They explain the
+                model, not the market.
+              </p>
+            )}
+
+            <section className="mt-7">
+              <h3 className="font-bold">Recent performance</h3>
+              <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                {[
+                  ["20-session return", analysis.return_20d],
+                  ["60-session return", analysis.return_60d],
+                  ["252-session return", analysis.return_252d],
+                  ["Annualized volatility", analysis.annualized_volatility_252d],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-md border border-border p-3">
+                    <dt className="text-xs text-muted-foreground">{label}</dt>
+                    <dd className="mt-1 font-semibold tabular-nums">{percentOrDash(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+
+            <section className="mt-7">
+              <h3 className="font-bold">What the model sees</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Technical indicators at the latest close ({formatDate(analysis.latest_close_date)}); not the saved inputs of an older
+                recommendation.
+              </p>
+              {Object.keys(analysis.technical_indicators).length === 0 ? (
+                <p className="mt-3 text-sm text-muted-foreground">Not enough adjusted history to calculate indicators.</p>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  {Object.entries(analysis.technical_indicators).map(([name, value]) => (
+                    <div key={name} className="rounded-md border border-border p-4">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <p className="text-sm font-semibold">{INDICATORS[name]?.label ?? name.replaceAll("_", " ")}</p>
+                        <p className="text-sm font-semibold tabular-nums">{formatIndicator(name, value)}</p>
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        {INDICATORS[name]?.definition ?? UNKNOWN_INDICATOR_DEFINITION}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <p className="mt-7 text-xs leading-5 text-muted-foreground">
+              Model estimates can be wrong. Use this as decision support, not a guarantee.
+              {analysis.model_version && ` Model ${analysis.model_version}.`}
+            </p>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }

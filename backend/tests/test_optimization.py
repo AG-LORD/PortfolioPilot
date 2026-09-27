@@ -2,6 +2,7 @@ from decimal import Decimal
 from unittest.mock import patch
 from uuid import uuid4
 
+import numpy as np
 import pytest
 from fastapi import HTTPException
 
@@ -216,6 +217,7 @@ def _make_risk_profile_permissive(db_session, portfolio):
     # exercise plumbing/wiring, not constraint math (covered separately).
     risk_profile = db_session.get(RiskProfile, portfolio.risk_profile_id)
     risk_profile.max_position_weight = Decimal("1.0")
+    risk_profile.max_sector_weight = Decimal("1.0")
     risk_profile.target_volatility = Decimal("1.0")
     db_session.commit()
 
@@ -304,8 +306,10 @@ def test_optimize_route_success(db_session, test_portfolio):
     assert response.portfolio_id == portfolio.id
     assert len(response.allocations) == 1
     assert response.allocations[0].ticker == "A"
-    assert abs(response.allocations[0].target_weight - Decimal("1")) < Decimal("0.001")
-    assert response.cash_weight == Decimal("0")
+    # Mean-variance with no binding limit: w = mu / (lambda * variance) = 0.1 / (4 * 0.04)
+    # for the fixture's moderate profile; the rest stays in cash.
+    assert abs(response.allocations[0].target_weight - Decimal("0.625")) < Decimal("0.001")
+    assert response.allocations[0].target_weight + response.cash_weight == Decimal("1")
 
     db_session.query(Holding).filter(Holding.id == holding.id).delete()
     db_session.commit()
@@ -368,3 +372,125 @@ def test_rounding_leaves_underinvested_weights_untouched():
     result = _finalize_weights(["A", "B"], [0.1, 0.05], [0.1, 0.05])
     assert [a.target_weight for a in result.allocations] == [Decimal("0.1"), Decimal("0.05")]
     assert result.cash_weight == Decimal("0.85")
+
+
+# --- mean-variance objective, shrinkage and sectors ------------------------------
+
+
+def _volatility(result, cov):
+    w = np.array([float(a.target_weight) for a in result.allocations])
+    sigma = np.array([[float(v) for v in row] for row in cov])
+    return float(np.sqrt(w @ sigma @ w))
+
+
+def test_mean_variance_gives_unequal_weights_when_volatilities_differ():
+    # Same expected return, different risk: the lowest-volatility asset gets the most.
+    cov = _diag_cov([Decimal("0.01"), Decimal("0.04"), Decimal("0.09")])
+    result = optimize_target_weights(
+        ["LOW", "MID", "HIGH"],
+        [Decimal("0.05")] * 3,
+        cov,
+        max_position_weight=Decimal("1.0"),
+        target_volatility=Decimal("1.0"),
+        risk_aversion=8.0,
+    )
+    w = {a.ticker: float(a.target_weight) for a in result.allocations}
+    assert w["LOW"] > w["MID"] > w["HIGH"] > 0
+    # Closed form without binding limits: w_i = mu / (lambda * var_i).
+    assert w["LOW"] == pytest.approx(0.05 / (8 * 0.01), abs=1e-3)
+    assert w["HIGH"] == pytest.approx(0.05 / (8 * 0.09), abs=1e-3)
+    assert result.objective == "mean_variance" and result.risk_aversion == 8.0
+
+    # The previous objective ignores risk and fills every position to its cap instead.
+    capped = optimize_target_weights(
+        ["LOW", "MID", "HIGH"],
+        [Decimal("0.05")] * 3,
+        cov,
+        max_position_weight=Decimal("0.3"),
+        target_volatility=Decimal("1.0"),
+        objective="max_return",
+    )
+    assert [float(a.target_weight) for a in capped.allocations] == pytest.approx([0.3, 0.3, 0.3], abs=1e-3)
+
+
+def test_higher_risk_aversion_gives_lower_ex_ante_volatility():
+    tickers = ["A", "B", "C", "D"]
+    returns = [Decimal("0.18"), Decimal("0.12"), Decimal("0.09"), Decimal("0.05")]
+    cov = [
+        [Decimal("0.09"), Decimal("0.02"), Decimal("0.01"), Decimal("0.0")],
+        [Decimal("0.02"), Decimal("0.06"), Decimal("0.01"), Decimal("0.0")],
+        [Decimal("0.01"), Decimal("0.01"), Decimal("0.04"), Decimal("0.0")],
+        [Decimal("0.0"), Decimal("0.0"), Decimal("0.0"), Decimal("0.02")],
+    ]
+    vols = [
+        _volatility(
+            optimize_target_weights(
+                tickers, returns, cov, Decimal("0.5"), Decimal("1.0"), risk_aversion=lam
+            ),
+            cov,
+        )
+        for lam in (2.0, 4.0, 8.0, 16.0)
+    ]
+    assert vols == sorted(vols, reverse=True)
+    assert vols[0] > vols[-1] + 0.01
+
+
+def test_mean_variance_respects_sector_cap_and_reports_it_binding():
+    tickers = ["A", "B", "C", "D"]
+    returns = [Decimal("0.20"), Decimal("0.19"), Decimal("0.06"), Decimal("0.05")]
+    cov = _diag_cov([Decimal("0.04")] * 4)
+    result = optimize_target_weights(
+        tickers,
+        returns,
+        cov,
+        max_position_weight=Decimal("0.5"),
+        target_volatility=Decimal("1.0"),
+        max_sector_weight=Decimal("0.3"),
+        sector_map={"A": "TECH", "B": "TECH", "C": "ENERGY"},  # D has no sector
+        risk_aversion=2.0,
+    )
+    w = {a.ticker: a.target_weight for a in result.allocations}
+    assert w["A"] + w["B"] <= Decimal("0.3") + Decimal("0.0005")
+    assert "TECH" in result.binding_sectors
+    groups = {a.ticker: a.sector_group for a in result.allocations}
+    assert groups["D"] == "D (no sector)"
+    # A ticker without a sector is its own group, capped at max_sector_weight too.
+    assert w["D"] <= Decimal("0.3") + Decimal("0.0005")
+
+
+def test_shrinkage_moves_estimates_toward_the_mean_and_preserves_ranking():
+    from app.services.optimization import SHRINKAGE_ALPHA, shrink_expected_returns
+
+    mu = np.array([0.30, -0.05, 0.12, 0.02, 0.18])
+    shrunk = shrink_expected_returns(mu)
+    assert list(np.argsort(shrunk)) == list(np.argsort(mu))
+    assert np.allclose(shrunk, SHRINKAGE_ALPHA * mu + (1 - SHRINKAGE_ALPHA) * mu.mean())
+    assert np.all(np.abs(shrunk - mu.mean()) <= np.abs(mu - mu.mean()) + 1e-12)
+
+    result = optimize_target_weights(
+        ["A", "B"], [Decimal("0.30"), Decimal("0.10")], _diag_cov([Decimal("0.04")] * 2), Decimal("1"), Decimal("1")
+    )
+    by_ticker = {a.ticker: a for a in result.allocations}
+    # expected_return stays the model's estimate; expected_return_used is shrunk.
+    assert by_ticker["A"].expected_return == Decimal("0.3")
+    assert by_ticker["A"].expected_return_used == Decimal("0.25")
+    assert by_ticker["B"].expected_return_used == Decimal("0.15")
+
+
+def test_all_cash_is_still_feasible_and_negative_estimates_are_never_bought():
+    cov = _diag_cov([Decimal("0.04")] * 3)
+    all_negative = optimize_target_weights(
+        ["A", "B", "C"], [Decimal("-0.02"), Decimal("0"), Decimal("-0.1")], cov, Decimal("0.2"), Decimal("0.15")
+    )
+    assert all(a.target_weight == 0 for a in all_negative.allocations)
+    assert all_negative.cash_weight == Decimal("1")
+
+    # Shrinkage lifts A's estimate above zero (0.5 * -0.01 + 0.5 * 0.145), but the
+    # model expects it to fall, so it still gets no weight.
+    mixed = optimize_target_weights(
+        ["A", "B"], [Decimal("-0.01"), Decimal("0.30")], _diag_cov([Decimal("0.04")] * 2), Decimal("0.5"), Decimal("1")
+    )
+    by_ticker = {a.ticker: a for a in mixed.allocations}
+    assert by_ticker["A"].expected_return_used > 0
+    assert by_ticker["A"].target_weight == 0
+    assert by_ticker["B"].target_weight > 0

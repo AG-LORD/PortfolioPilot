@@ -32,7 +32,17 @@
         "cash_weight": "0.82",
         "expected_portfolio_return": "0.031111",
         "expected_portfolio_volatility": "0.040000"
-      }
+      },
+      "total_deposited": "110000.0000",
+      "updated_at": "2026-01-02T09:30:00+05:30",
+      "adopted_recommendation_id": "00000000-0000-4000-8000-0000000000aa",
+      "adopted_at": "2026-01-02T09:30:00+05:30",
+      "sparkline": [
+        "100000.0000",
+        "101200.5000",
+        "100800.0000",
+        "105555.0000"
+      ]
     },
     {
       "id": "00000000-0000-4000-8000-000000000002",
@@ -46,7 +56,12 @@
       "unrealized_pnl": null,
       "unrealized_pnl_pct": null,
       "holdings_count": 0,
-      "latest_recommendation": null
+      "latest_recommendation": null,
+      "total_deposited": "200000.0000",
+      "updated_at": "2026-01-01T09:00:00+05:30",
+      "adopted_recommendation_id": null,
+      "adopted_at": null,
+      "sparkline": []
     }
   ]
 }

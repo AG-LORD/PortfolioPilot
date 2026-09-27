@@ -7,6 +7,7 @@ from app.models import Holding, Portfolio
 from app.schemas.valuation import HoldingValuation, PortfolioValuation
 from app.services import market_data
 from app.services.portfolios import get_portfolio, list_holdings
+from app.services.sectors import get_sector
 
 
 def calculate_valuation(
@@ -35,6 +36,7 @@ def calculate_valuation(
                 current_price=current_price,
                 market_value=market_value,
                 unrealized_pnl=unrealized_pnl,
+                sector=get_sector(holding.ticker),
             )
         )
 

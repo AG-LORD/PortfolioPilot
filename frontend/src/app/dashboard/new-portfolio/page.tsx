@@ -1,28 +1,45 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { StockSelector } from "@/components/stocks/StockSelector";
+import { DetailsStep, type PortfolioDetails } from "@/components/wizard/DetailsStep";
+import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { RiskStep } from "@/components/wizard/RiskStep";
+import { WizardFooter } from "@/components/wizard/WizardFooter";
+import { WizardStepper } from "@/components/wizard/WizardStepper";
 import { apiFetch, getAccessToken } from "@/lib/api";
 import { getErrorMessage } from "@/lib/errors";
-import { formatCurrency, formatPercent } from "@/lib/format";
 import { RISK_QUESTIONS, mapAnswersToRiskProfile, type RiskCategory } from "@/lib/riskMapping";
 import { DEFAULT_SELECTION, isSelectionValid, saveSelection, type StockSelection } from "@/lib/stockSelection";
-
-type PortfolioDetails = {
-  name: string;
-  purpose: string;
-  initial_capital: string;
-};
 
 type Step = 1 | 2 | 3 | 4;
 
 const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
 const stepLabels = ["Risk", "Details", "Stocks", "Review"];
+const stepTitles = ["Your risk profile", "Portfolio details", "Choose stocks", "Review"];
 
-function capitalize(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
+function getDetailErrors(details: PortfolioDetails): Partial<Record<keyof PortfolioDetails, string>> {
+  const errors: Partial<Record<keyof PortfolioDetails, string>> = {};
+
+  if (!details.name.trim()) {
+    errors.name = "Enter a portfolio name.";
+  } else if (details.name.length > 100) {
+    errors.name = "Name must be 100 characters or fewer.";
+  }
+
+  if (details.purpose.length > 255) {
+    errors.purpose = "Purpose must be 255 characters or fewer.";
+  }
+
+  if (!details.initial_capital) {
+    errors.initial_capital = "Enter how much you want to invest.";
+  } else if (!DECIMAL_PATTERN.test(details.initial_capital) || Number(details.initial_capital) <= 0) {
+    errors.initial_capital = "Enter an amount greater than ₹0.";
+  }
+
+  return errors;
 }
 
 export default function NewPortfolioPage() {
@@ -35,36 +52,33 @@ export default function NewPortfolioPage() {
     initial_capital: "",
   });
   const [selection, setSelection] = useState<StockSelection>(DEFAULT_SELECTION);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const hasMounted = useRef(false);
 
-  const allQuestionsAnswered = RISK_QUESTIONS.every((q) => riskAnswers[q.id] !== undefined);
+  const answeredCount = RISK_QUESTIONS.filter((q) => riskAnswers[q.id] !== undefined).length;
+  const allQuestionsAnswered = answeredCount === RISK_QUESTIONS.length;
   const riskProfile = allQuestionsAnswered ? mapAnswersToRiskProfile(RISK_QUESTIONS.map((q) => riskAnswers[q.id])) : null;
+  const detailErrors = getDetailErrors(details);
+  const detailsValid = Object.keys(detailErrors).length === 0;
 
-  function validateDetails(): boolean {
-    const errors: Record<string, string> = {};
-
-    if (!details.name.trim()) {
-      errors.name = "Name is required.";
-    } else if (details.name.length > 100) {
-      errors.name = "Name must be 100 characters or fewer.";
+  // Move focus to the new step's heading so keyboard and screen-reader users land on it.
+  useEffect(() => {
+    if (!hasMounted.current) {
+      hasMounted.current = true;
+      return;
     }
+    headingRef.current?.focus();
+  }, [step]);
 
-    if (details.purpose.length > 255) {
-      errors.purpose = "Purpose must be 255 characters or fewer.";
-    }
-
-    if (!DECIMAL_PATTERN.test(details.initial_capital) || Number(details.initial_capital) <= 0) {
-      errors.initial_capital = "Initial capital must be a positive number.";
-    }
-
-    setFieldErrors(errors);
-    return Object.keys(errors).length === 0;
+  function goTo(target: number) {
+    if (submitting) return;
+    setStep(target as Step);
   }
 
   async function handleCreate() {
-    if (!riskProfile || !validateDetails() || !isSelectionValid(selection)) return;
+    if (!riskProfile || !detailsValid || !isSelectionValid(selection)) return;
 
     setSubmitting(true);
     setSubmitError(null);
@@ -118,220 +132,121 @@ export default function NewPortfolioPage() {
     }
   }
 
+  const backButton =
+    step === 1 ? (
+      <Link href="/dashboard" className="secondary-button">Back</Link>
+    ) : (
+      <button type="button" className="secondary-button" onClick={() => goTo(step - 1)} disabled={submitting}>
+        Back
+      </button>
+    );
+
+  let footer;
+  if (step === 1) {
+    footer = (
+      <WizardFooter
+        back={backButton}
+        continueLabel="Continue"
+        onContinue={() => goTo(2)}
+        disabled={!allQuestionsAnswered}
+        disabledReason="Answer all 3 questions"
+      />
+    );
+  } else if (step === 2) {
+    footer = (
+      <WizardFooter
+        back={backButton}
+        continueLabel="Continue"
+        onContinue={() => goTo(3)}
+        disabled={!detailsValid}
+        disabledReason={
+          detailErrors.name && !details.name.trim()
+            ? "Enter a portfolio name"
+            : detailErrors.initial_capital && !details.initial_capital
+              ? "Enter your investment amount"
+              : "Fix the highlighted fields"
+        }
+      />
+    );
+  } else if (step === 3) {
+    footer = (
+      <WizardFooter
+        back={backButton}
+        continueLabel="Continue"
+        onContinue={() => goTo(4)}
+        disabled={!isSelectionValid(selection)}
+        disabledReason="Choose at least 1 stock"
+      />
+    );
+  } else {
+    footer = (
+      <WizardFooter
+        back={backButton}
+        continueLabel={submitting ? "Creating portfolio…" : "Create portfolio & generate recommendation"}
+        onContinue={() => void handleCreate()}
+        disabled={submitting}
+        busy={submitting}
+        wide
+      />
+    );
+  }
+
   return (
-    <main className="page-shell">
-      <header className="page-header">
+    <main className="wizard-shell">
+      <header className="wizard-header">
         <div className="page-heading">
           <span className="eyebrow">Portfolio creation</span>
-          <h1 className="page-title">Create Portfolio</h1>
+          <h1 className="wizard-title">Create portfolio</h1>
         </div>
         <Link href="/dashboard" className="ghost-button">Cancel</Link>
       </header>
 
-      <div className="card" style={{ padding: "26px" }}>
-        <div className="stepper" aria-label="Portfolio creation steps">
-          {stepLabels.map((label, index) => {
-            const status = index + 1 < step ? "done" : index + 1 === step ? "active" : "";
-            return (
-              <div key={label} className={`stepper-step ${status}`} aria-current={index + 1 === step ? "step" : undefined}>
-                <span className="stepper-number">{index + 1}</span>
-                <span>{label}</span>
-              </div>
-            );
-          })}
+      <WizardStepper labels={stepLabels} current={step} onSelect={goTo} />
+
+      <section className="card wizard-card" aria-labelledby="wizard-step-title">
+        <div className="wizard-card-header">
+          <h2 id="wizard-step-title" ref={headingRef} tabIndex={-1} className="wizard-step-title">
+            <span className="wizard-step-count">Step {step} of 4</span>
+            <span aria-hidden="true"> · </span>
+            {stepTitles[step - 1]}
+          </h2>
+          {step === 1 && (
+            <span className="wizard-step-meta" aria-live="polite">
+              {answeredCount} of {RISK_QUESTIONS.length} answered
+            </span>
+          )}
         </div>
 
-        {step === 1 && (
-          <div className="form-grid">
-            <div className="section-header" style={{ marginBottom: 0 }}>
-              <div>
-                <span className="eyebrow">Step 1</span>
-                <h2 className="section-title">Risk</h2>
-              </div>
-            </div>
+        <div className="wizard-card-body">
+          {step === 1 && (
+            <RiskStep
+              answers={riskAnswers}
+              onAnswer={(id, value) => setRiskAnswers((prev) => ({ ...prev, [id]: value }))}
+              profile={riskProfile}
+            />
+          )}
 
-            {RISK_QUESTIONS.map((q) => (
-              <fieldset key={q.id} className="risk-question">
-                <legend>{q.text}</legend>
-                <div className="option-grid">
-                  {q.options.map((opt) => {
-                    const selected = riskAnswers[q.id] === opt.value;
-                    return (
-                      <label
-                        key={opt.value}
-                        className={`option-card ${selected ? "selected" : ""}`}
-                        onClick={() => setRiskAnswers((prev) => ({ ...prev, [q.id]: opt.value }))}
-                      >
-                        <span className="option-card-header">
-                          <span className="option-title">{opt.label}</span>
-                          <input
-                            type="radio"
-                            name={q.id}
-                            value={opt.value}
-                            checked={selected}
-                            onChange={() => setRiskAnswers((prev) => ({ ...prev, [q.id]: opt.value }))}
-                            aria-label={opt.label}
-                          />
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </fieldset>
-            ))}
+          {step === 2 && <DetailsStep details={details} errors={detailErrors} onChange={setDetails} />}
 
-            {riskProfile && (
-              <div className="risk-profile-card" role="status">
-                <span className="eyebrow">Your risk profile</span>
-                <div className="risk-profile-name">{capitalize(riskProfile.category)}</div>
-                <div className="risk-profile-meta">Max per stock {formatPercent(riskProfile.max_position_weight)}</div>
-                <div className="risk-profile-meta">Target volatility {formatPercent(riskProfile.target_volatility)}</div>
-              </div>
-            )}
-
-            <div className="segmented-actions">
-              <Link href="/dashboard" className="secondary-button">Back</Link>
-              <button type="button" className="primary-button" disabled={!allQuestionsAnswered} onClick={() => setStep(2)}>
-                Continue
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="form-grid">
-            <div className="section-header" style={{ marginBottom: 0 }}>
-              <div>
-                <span className="eyebrow">Step 2</span>
-                <h2 className="section-title">Details</h2>
-              </div>
-            </div>
-
-            <div className="field-group">
-              <label className="field-label" htmlFor="portfolio-name">Portfolio name</label>
-              <input
-                id="portfolio-name"
-                value={details.name}
-                onChange={(e) => setDetails((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder="For example: Long-term Growth"
-              />
-              {fieldErrors.name && <p className="field-hint" style={{ color: "var(--danger)" }}>{fieldErrors.name}</p>}
-            </div>
-
-            <div className="field-group">
-              <label className="field-label" htmlFor="portfolio-purpose">Purpose (optional)</label>
-              <input
-                id="portfolio-purpose"
-                value={details.purpose}
-                onChange={(e) => setDetails((prev) => ({ ...prev, purpose: e.target.value }))}
-                placeholder="Retirement, home purchase, wealth creation..."
-              />
-              {fieldErrors.purpose && <p className="field-hint" style={{ color: "var(--danger)" }}>{fieldErrors.purpose}</p>}
-            </div>
-
-            <div className="field-group">
-              <label className="field-label" htmlFor="portfolio-capital">Investment capital (₹)</label>
-              <div className="currency-field">
-                <span className="prefix">₹</span>
-                <input
-                  id="portfolio-capital"
-                  inputMode="decimal"
-                  value={details.initial_capital}
-                  onChange={(e) => setDetails((prev) => ({ ...prev, initial_capital: e.target.value }))}
-                  placeholder="500000"
-                />
-              </div>
-              {fieldErrors.initial_capital && (
-                <p className="field-hint" style={{ color: "var(--danger)" }}>{fieldErrors.initial_capital}</p>
-              )}
-            </div>
-
-            <div className="segmented-actions">
-              <button type="button" className="secondary-button" onClick={() => setStep(1)}>
-                Back
-              </button>
-              <button type="button" className="primary-button" onClick={() => validateDetails() && setStep(3)}>
-                Continue
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div className="form-grid">
-            <div className="section-header" style={{ marginBottom: 0 }}>
-              <div>
-                <span className="eyebrow">Step 3</span>
-                <h2 className="section-title">Stocks</h2>
-              </div>
-            </div>
-
+          {step === 3 && (
             <StockSelector value={selection} onChange={setSelection} maxPositionWeight={riskProfile?.max_position_weight} />
+          )}
 
-            <div className="segmented-actions">
-              <button type="button" className="secondary-button" onClick={() => setStep(2)}>
-                Back
-              </button>
-              <button type="button" className="primary-button" disabled={!isSelectionValid(selection)} onClick={() => setStep(4)}>
-                Continue
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 4 && riskProfile && (
-          <div className="form-grid">
-            <div className="section-header" style={{ marginBottom: 0 }}>
-              <div>
-                <span className="eyebrow">Step 4</span>
-                <h2 className="section-title">Review</h2>
-              </div>
-            </div>
-
-            <div className="detail-grid">
-              <div className="detail-item">
-                <span className="detail-label">Risk profile</span>
-                <div className="detail-value">{capitalize(riskProfile.category)}</div>
-                <p className="field-hint">
-                  Max per stock {formatPercent(riskProfile.max_position_weight)} · Target volatility {formatPercent(riskProfile.target_volatility)}
-                </p>
-              </div>
-              <div className="detail-item">
-                <span className="detail-label">Portfolio</span>
-                <div className="detail-value">{details.name.trim()}</div>
-                <p className="field-hint">Capital {formatCurrency(details.initial_capital)}</p>
-              </div>
-              <div className="detail-item">
-                <span className="detail-label">Stocks</span>
-                <div className="detail-value">
-                  {selection.mode === "nifty50" ? "All NIFTY 50" : `${selection.tickers.length} stock${selection.tickers.length === 1 ? "" : "s"}`}
+          {step === 4 && riskProfile && (
+            <>
+              <ReviewStep profile={riskProfile} details={details} selection={selection} onEdit={goTo} disabled={submitting} />
+              {submitError && (
+                <div className="notice error" role="alert" style={{ marginTop: 18 }}>
+                  <span className="notice-icon">⚠</span>
+                  <div>{submitError}</div>
                 </div>
-                {selection.mode === "custom" && <p className="field-hint">{selection.tickers.join(", ")}</p>}
-              </div>
-              <div className="detail-item">
-                <span className="detail-label">Method</span>
-                <div className="detail-value">ML-assisted analysis</div>
-              </div>
-            </div>
+              )}
+            </>
+          )}
+        </div>
 
-            {submitError && (
-              <div className="notice error" role="alert">
-                <span className="notice-icon">⚠</span>
-                <div>{submitError}</div>
-              </div>
-            )}
-
-            <div className="segmented-actions">
-              <button type="button" className="secondary-button" onClick={() => setStep(3)} disabled={submitting}>
-                Back
-              </button>
-              <button type="button" className="primary-button" onClick={() => void handleCreate()} disabled={submitting}>
-                {submitting ? "Creating portfolio..." : "Create portfolio & generate recommendation"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+        {footer}
+      </section>
     </main>
   );
 }

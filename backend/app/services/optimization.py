@@ -8,10 +8,23 @@ Cash is an explicit (n+1)th decision variable (zero expected return,
 zero variance, zero covariance with every asset) rather than requiring
 100% equity investment — otherwise a tight max_position_weight with few
 holdings (e.g. 3 holdings capped at 10% each) would be falsely infeasible.
+All cash is always feasible, so a solution always exists for valid limits.
+
+Objective (docs/ML_METHODOLOGY.md, "Optimizer"):
+- "mean_variance" (default): maximize mu_s'w - (lambda/2) w'Sigma w, where
+  lambda is the profile's risk aversion (RISK_AVERSION) and mu_s the shrunk
+  estimates (shrink_expected_returns).
+- "max_return": maximize mu_s'w (the previous behaviour, kept for comparison).
+Both are subject to: weights + cash = 1, 0 <= w_i <= max_position_weight,
+portfolio volatility <= target_volatility, cash >= 0 and, when a sector map
+is given, the weight of every sector <= max_sector_weight. A ticker whose
+UNshrunk estimate is <= 0 is never bought (upper bound 0): shrinkage pulls
+estimates toward the mean and must not turn "expected to fall" into a buy.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 import numpy as np
@@ -21,6 +34,24 @@ from sqlalchemy.orm import Session
 from app.models import RiskProfile
 from app.services.expected_returns import ExpectedReturnsInput, get_expected_returns_and_covariance
 from app.services.portfolios import get_portfolio, list_holdings
+from app.services.sectors import get_sector
+
+Objective = Literal["mean_variance", "max_return"]
+MEAN_VARIANCE: Objective = "mean_variance"
+MAX_RETURN: Objective = "max_return"
+
+# Risk aversion (lambda) per risk-profile category: a higher value trades
+# more expected return away for lower variance.
+RISK_AVERSION: dict[str, float] = {"conservative": 8.0, "moderate": 4.0, "aggressive": 2.0}
+DEFAULT_RISK_AVERSION = RISK_AVERSION["moderate"]
+
+# Weight on each ticker's own estimate; the rest goes to the cross-sectional
+# mean. Damps noisy forecasts without changing their ranking.
+SHRINKAGE_ALPHA = 0.5
+
+# Solver tolerance for feasibility checks and for calling a limit binding.
+FEASIBILITY_TOLERANCE = 1e-4
+BINDING_TOLERANCE = 1e-4
 
 
 class OptimizationError(Exception):
@@ -35,16 +66,43 @@ class InfeasibleAllocationError(OptimizationError):
 class TargetWeight:
     ticker: str
     target_weight: Decimal
-    expected_return: Decimal
+    expected_return: Decimal  # the model's estimate, before shrinkage
+    expected_return_used: Decimal | None = None  # after shrinkage: what the optimizer used
+    sector_group: str | None = None  # the sector the constraint grouped it in; None without a sector map
 
 
 @dataclass
 class TargetAllocationResult:
     allocations: list[TargetWeight]
     cash_weight: Decimal
+    # Sector groups whose max_sector_weight cap is binding in the solution.
+    binding_sectors: set[str] = field(default_factory=set)
+    objective: Objective = MEAN_VARIANCE
+    risk_aversion: float | None = None
 
     def __iter__(self):
         return iter(self.allocations)
+
+
+def risk_aversion_for(category: str | None) -> float:
+    return RISK_AVERSION.get((category or "").lower(), DEFAULT_RISK_AVERSION)
+
+
+def shrink_expected_returns(mu: np.ndarray, alpha: float = SHRINKAGE_ALPHA) -> np.ndarray:
+    """mu_s = alpha * mu + (1 - alpha) * mean(mu). A positive alpha keeps the ranking."""
+    if mu.size == 0:
+        return mu
+    return alpha * mu + (1.0 - alpha) * float(np.mean(mu))
+
+
+def sector_groups(tickers: list[str], sector_map: dict[str, str]) -> list[str]:
+    """Constraint group per ticker; tickers without a sector form their own group."""
+    return [sector_map.get(t) or f"{t} (no sector)" for t in tickers]
+
+
+def sector_map_for(tickers: list[str]) -> dict[str, str]:
+    """Sectors from app/data/sectors.json for the tickers that have one."""
+    return {t: s for t in tickers if (s := get_sector(t))}
 
 
 def optimize_target_weights(
@@ -55,6 +113,10 @@ def optimize_target_weights(
     target_volatility: Decimal,
     max_sector_weight: Decimal | None = None,
     sector_map: dict[str, str] | None = None,
+    *,
+    objective: Objective = MEAN_VARIANCE,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
+    shrinkage_alpha: float = SHRINKAGE_ALPHA,
 ) -> TargetAllocationResult:
     n = len(tickers)
     if n == 0:
@@ -63,59 +125,86 @@ def optimize_target_weights(
         raise InfeasibleAllocationError("target_volatility cannot be negative.")
     if max_position_weight <= 0:
         raise InfeasibleAllocationError("max_position_weight must be strictly positive.")
+    if objective not in (MEAN_VARIANCE, MAX_RETURN):
+        raise OptimizationError(f"Unknown objective: {objective}")
 
-    mu = np.array([float(r) for r in expected_returns])
+    mu_raw = np.array([float(r) for r in expected_returns])
+    mu = shrink_expected_returns(mu_raw, shrinkage_alpha)
     sigma = np.array([[float(v) for v in row] for row in covariance])
     max_pos = float(max_position_weight)
     target_vol = float(target_volatility)
+    lam = float(risk_aversion)
 
-    # Variables: n asset weights followed by 1 cash weight.
-    bounds = [(0.0, max_pos) for _ in range(n)] + [(0.0, 1.0)]
+    # Variables: n asset weights followed by 1 cash weight. Never buy a stock
+    # the model expects to fall, whatever shrinkage did to its estimate.
+    bounds = [(0.0, max_pos if mu_raw[i] > 0 else 0.0) for i in range(n)] + [(0.0, 1.0)]
 
+    # Volatility as a variance constraint: smooth at w = 0, unlike the square root.
     constraints = [
-        {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
-        {"type": "ineq", "fun": lambda w: target_vol - np.sqrt(max(w[:n] @ sigma @ w[:n], 0.0))},
+        {"type": "eq", "fun": lambda w: np.sum(w) - 1.0, "jac": lambda w: np.ones(n + 1)},
+        {
+            "type": "ineq",
+            "fun": lambda w: target_vol**2 - w[:n] @ sigma @ w[:n],
+            "jac": lambda w: np.concatenate([-2.0 * (sigma @ w[:n]), [0.0]]),
+        },
     ]
 
-    # Sector constraint only applied where sector data is actually
-    # available — no sector data source exists yet in this codebase, so
-    # sector_map is None by default and this is skipped, not invented.
-    if sector_map and max_sector_weight is not None:
+    groups = sector_groups(tickers, sector_map) if sector_map is not None else None
+    group_members: dict[str, list[int]] = {}
+    if groups is not None and max_sector_weight is not None:
         max_sector = float(max_sector_weight)
-        sectors = sorted({sector_map[t] for t in tickers if t in sector_map})
-        for sector in sectors:
-            idx = [i for i, t in enumerate(tickers) if sector_map.get(t) == sector]
+        for i, group in enumerate(groups):
+            group_members.setdefault(group, []).append(i)
+        for idx in group_members.values():
+            row = np.zeros(n + 1)
+            row[idx] = 1.0
+            constraints.append(
+                {"type": "ineq", "fun": lambda w, row=row: max_sector - row @ w, "jac": lambda w, row=row: -row}
+            )
 
-            def sector_constraint(w, idx=idx):
-                return max_sector - sum(w[i] for i in idx)
+    def negative_utility(w):
+        assets = w[:n]
+        value = mu @ assets
+        if objective == MEAN_VARIANCE:
+            value -= 0.5 * lam * (assets @ sigma @ assets)
+        return -value
 
-            constraints.append({"type": "ineq", "fun": sector_constraint})
+    def negative_utility_grad(w):
+        grad = mu.copy()
+        if objective == MEAN_VARIANCE:
+            grad = grad - lam * (sigma @ w[:n])
+        return np.concatenate([-grad, [0.0]])
 
     init_asset_weight = min(max_pos, 1.0 / (n + 1))
-    init_cash = max(1.0 - n * init_asset_weight, 0.0)
-    x0 = np.array([init_asset_weight] * n + [init_cash])
+    x0 = np.array([init_asset_weight if upper > 0 else 0.0 for _, upper in bounds[:n]] + [0.0])
+    x0[n] = 1.0 - x0[:n].sum()
 
     result = minimize(
-        lambda w: -np.dot(w[:n], mu),
+        negative_utility,
         x0,
+        jac=negative_utility_grad,
         method="SLSQP",
         bounds=bounds,
         constraints=constraints,
-        options={"maxiter": 200, "ftol": 1e-9},
+        options={"maxiter": 500, "ftol": 1e-12},
     )
 
     weights = result.x
-    asset_weights = weights[:n]
+    asset_weights = np.clip(weights[:n], 0.0, None)
     cash_val = weights[n]
-    tol = 1e-4
+    tol = FEASIBILITY_TOLERANCE
     portfolio_vol = np.sqrt(max(asset_weights @ sigma @ asset_weights, 0.0))
+    sector_ok = all(
+        asset_weights[idx].sum() <= float(max_sector_weight) + tol for idx in group_members.values()
+    )
     feasible = (
         result.success
         and abs(np.sum(weights) - 1.0) < tol
-        and np.all(asset_weights >= -tol)
+        and np.all(weights[:n] >= -tol)
         and cash_val >= -tol
         and np.all(asset_weights <= max_pos + tol)
         and portfolio_vol <= target_vol + tol
+        and sector_ok
     )
     if not feasible:
         raise InfeasibleAllocationError(
@@ -123,15 +212,26 @@ def optimize_target_weights(
             "(max position weight, max sector weight, target volatility)."
         )
 
-    return _finalize_weights(tickers, asset_weights, mu)
+    binding = {
+        group
+        for group, idx in group_members.items()
+        if asset_weights[idx].sum() >= float(max_sector_weight) - BINDING_TOLERANCE
+    }
+    result_weights = _finalize_weights(tickers, asset_weights, mu_raw, mu_used=mu, groups=groups)
+    result_weights.binding_sectors = binding
+    result_weights.objective = objective
+    result_weights.risk_aversion = lam if objective == MEAN_VARIANCE else None
+    return result_weights
 
 
-def _finalize_weights(tickers: list[str], asset_weights, mu) -> TargetAllocationResult:
+def _finalize_weights(tickers: list[str], asset_weights, mu, mu_used=None, groups=None) -> TargetAllocationResult:
     allocations = [
         TargetWeight(
             ticker=ticker,
             target_weight=Decimal(str(round(max(weight, 0.0), 6))),
             expected_return=Decimal(str(round(mu[i], 6))),
+            expected_return_used=None if mu_used is None else Decimal(str(round(float(mu_used[i]), 6))),
+            sector_group=None if groups is None else groups[i],
         )
         for i, (ticker, weight) in enumerate(zip(tickers, asset_weights))
     ]
@@ -173,5 +273,6 @@ def get_portfolio_target_allocation(
         max_position_weight=risk_profile.max_position_weight,
         target_volatility=risk_profile.target_volatility,
         max_sector_weight=risk_profile.max_sector_weight,
-        sector_map=None,
+        sector_map=sector_map_for(inputs.tickers),
+        risk_aversion=risk_aversion_for(risk_profile.category),
     )

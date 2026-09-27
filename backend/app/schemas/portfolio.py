@@ -26,6 +26,9 @@ class PortfolioRead(BaseModel):
     base_currency: str
     initial_capital: Decimal
     cash_balance: Decimal
+    # The recommendation the user adopted as their plan; null when none.
+    adopted_recommendation_id: UUID | None = None
+    adopted_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

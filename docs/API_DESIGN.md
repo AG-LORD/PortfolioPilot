@@ -20,7 +20,9 @@ and are validated against these schemas by `backend/tests/test_frontend_mocks.py
 | POST | `/portfolios` | `PortfolioRead` |
 | GET | `/portfolios/overview` | `PortfolioOverviewRead` (see below) |
 | GET | `/portfolios/{portfolio_id}` | `PortfolioRead` |
+| DELETE | `/portfolios/{portfolio_id}` | 204; deletes the portfolio and all its rows in one transaction |
 | POST | `/portfolios/{portfolio_id}/transactions` | `TransactionRead` |
+| POST | `/portfolios/{portfolio_id}/transactions/batch` | `TransactionRead[]` (atomic, see below) |
 | GET | `/portfolios/{portfolio_id}/transactions` | `TransactionRead[]` |
 | GET | `/portfolios/{portfolio_id}/holdings` | `HoldingRead[]` |
 | GET | `/portfolios/{portfolio_id}/valuation` | `PortfolioValuation` |
@@ -30,6 +32,9 @@ and are validated against these schemas by `backend/tests/test_frontend_mocks.py
 | POST | `/portfolios/{portfolio_id}/recommendation` | `RecommendationRead` (see below) |
 | GET | `/portfolios/{portfolio_id}/recommendations` | `RecommendationSummary[]`, newest first |
 | GET | `/portfolios/{portfolio_id}/recommendations/{recommendation_id}` | Stored immutable `RecommendationRead` |
+| POST | `/portfolios/{portfolio_id}/recommendations/{recommendation_id}/adopt` | `PortfolioRead` (see below) |
+| GET | `/portfolios/{portfolio_id}/recommendations/{recommendation_id}/history-preview?period=1y` | `HistoryPreviewRead` (see below) |
+| GET | `/portfolios/{portfolio_id}/performance` | `PortfolioPerformanceRead` (see below) |
 | POST | `/portfolios/{portfolio_id}/rebalance-proposals` | Persisted read-only `RebalanceProposalRead` |
 | GET | `/portfolios/{portfolio_id}/rebalance-proposals/{proposal_id}` | `RebalanceProposalRead` |
 | POST | `/portfolios/{portfolio_id}/rebalance-proposals/{proposal_id}/execute` | Confirmed `RebalanceExecutionRead` |
@@ -67,7 +72,7 @@ holdings, or transactions. A successful result is saved as an immutable
 - **historical:** each ticker's expected return is 252 × the mean of its last 252 daily returns. That is the same definition as the ML evaluation baseline, in annual units.
 - **ml:** a HistGradientBoosting model is trained on the point-in-time feature panel using every row whose 20-day label is already known. It predicts each ticker's latest feature row, and the 20-trading-day forecast is converted to annual units as `forecast × 252 / 20`. A ticker with no feature row on the latest date falls back to its historical estimate, and its `source` is `"historical"`. Training happens on each request; nothing is persisted.
 - Covariance is the same for both models: Ledoit-Wolf on daily returns over the dates common to all eligible tickers, limited to the last 252 of them (at least 30 required), annualized × 252.
-- Weights come from the existing cash-aware optimizer. It maximizes expected return subject to the risk profile's `max_position_weight` and `target_volatility`, and the rest stays in cash.
+- Weights come from the cash-aware mean-variance optimizer (docs/ML_METHODOLOGY.md, section 10): it maximizes shrunk expected return minus a risk penalty set by the profile, subject to `max_position_weight`, `target_volatility` and `max_sector_weight`, and the rest stays in cash. Allocations carry `expected_return_used` (the shrunk estimate) and `limit_reason`; `constraints.max_sector_weight` is included.
 - `capital` is `cash_balance` rounded down to 0.01. `cash_balance` is stored with 4 decimals, so any sub-paisa remainder (less than ₹0.01) is left unallocated and not reported.
 - `amount = target_weight × capital`, rounded down to 0.01. `cash_amount` is the exact remainder, so amounts + `cash_amount` = `capital`, all with 2 decimals.
 - `at_position_limit` is true when `target_weight` equals `max_position_weight` within 0.0001.
@@ -205,16 +210,66 @@ exclusions, and per-block IC. If no valid artifact exists, the route returns
 
 - Forecast metrics are not live portfolio returns. The naive IC standard error is optimistic because labels overlap.
 
+## Adopted plan
+
+`POST /portfolios/{id}/recommendations/{rid}/adopt` records `rid` as the
+portfolio's plan (`adopted_recommendation_id`, `adopted_at` on `PortfolioRead`
+and on overview items). It changes no cash, holdings or transactions and does
+not bump `updated_at`. `rid` must belong to this portfolio, else 404.
+
+**Plan target**: drift and rebalance proposals (without an explicit
+`recommendation_id`) use the ADOPTED recommendation when one is set, otherwise
+the latest saved recommendation. An adopted plan is never reported stale: its
+weights apply to the portfolio's current value, so recording the plan's own
+orders does not invalidate it. A latest-recommendation target is stale once
+the portfolio changed after it was saved.
+
+Recommendations also return `not_selected`: every eligible ticker the
+optimizer gave zero weight, with `reason` `negative_estimate`
+(`expected_return <= 0`), `sector_limit` (its sector's cap is binding) or
+`risk_tradeoff` (more risk than return for the profile). Snapshots from before
+the mean-variance optimizer may carry `risk_limit`. Snapshots saved before this
+field return `null` (unknown), which is different from `[]` (nothing was left
+out). `sector` on allocations, `not_selected` items and valuation holdings
+comes from `backend/app/data/sectors.json` (null when unknown); the optimizer
+enforces `max_sector_weight` per sector, a ticker without a sector counting as
+its own sector.
+
+## POST /portfolios/{id}/transactions/batch
+
+Body: 1 to 50 `{side: "BUY"|"SELL", ticker, quantity, price, fees}` rows. Rows
+apply in order through the regular transaction rules on one database
+transaction. The first failing row (for example insufficient cash) rolls every
+row back and returns 422 naming the row.
+
+## Charts
+
+`GET /portfolios/{id}/recommendations/{rid}/history-preview?period=1y` returns
+`{start, end, points: [{date, mix, benchmark}], note}`: the daily value of the
+recommendation's weights held fixed (cash at 0%) over the past year, starting
+at the recommendation's capital, and NIFTY 50 (`^NSEI`, cached as
+`NIFTY50_INDEX`) scaled to the same start. Only days where every series has a
+close are used; if a ticker lacks a full year the series starts at the latest
+common start date and `note` says so. It is hindsight context with today's
+weights, not a backtest or a forecast. 503 when prices are unavailable.
+
+`GET /portfolios/{id}/performance` returns `{points: [{date, portfolio,
+benchmark}]}`: daily snapshot `total_value` and NIFTY 50 scaled to the first
+snapshot's value (latest close on or before each date; null if none). Fewer
+than 2 snapshots return `points: []`. Overview items carry `sparkline`: the
+last 30 snapshot values, oldest first, empty with fewer than 2.
+
 ## Drift and rebalancing
 
 `GET /portfolios/{id}/drift` computes weights from the portfolio's current
-holdings, cash, and backend quotes, then compares them with the latest saved
-recommendation. Missing quotes make the valuation incomplete; the response
-reports missing symbols and withholds unreliable weights. Targets older than a
-portfolio update are marked stale.
+holdings, cash, and backend quotes, then compares them with the plan target
+(the adopted recommendation, else the latest saved one; see Adopted plan).
+Missing quotes make the valuation incomplete; the response reports missing
+symbols and withholds unreliable weights. A latest-recommendation target older
+than a portfolio update is marked stale.
 
 `POST /portfolios/{id}/rebalance-proposals` accepts an optional
-`recommendation_id` and saves a pending proposal without changing holdings,
+`recommendation_id` (default: the plan target) and saves a pending proposal without changing holdings,
 cash, or transactions. Prices come from backend market data. Proposed
 quantities are whole shares, sales are accounted for before purchases, and
 purchases are capped to cash after projected sales. Estimated fees are zero

@@ -20,7 +20,10 @@
       "source": "ml",
       "clipped": false,
       "drivers": [],
-      "typical_estimate": null
+      "typical_estimate": null,
+      "sector": "Mock Sector",
+      "expected_return_used": "0.177778",
+      "limit_reason": "position_limit"
     },
     {
       "ticker": "MOCK_DELTA",
@@ -31,7 +34,10 @@
       "source": "historical",
       "clipped": false,
       "drivers": [],
-      "typical_estimate": null
+      "typical_estimate": null,
+      "sector": null,
+      "expected_return_used": "0.088889",
+      "limit_reason": "sector_limit"
     }
   ],
   "cash_weight": "0.82",
@@ -40,7 +46,34 @@
   "expected_portfolio_volatility": "0.040000",
   "constraints": {
     "max_position_weight": "0.1",
-    "target_volatility": "0.15"
+    "target_volatility": "0.15",
+    "max_sector_weight": "0.25"
   },
-  "excluded": []
+  "excluded": [],
+  "not_selected": [
+    {
+      "ticker": "MOCK_ECHO",
+      "sector": "Mock Sector",
+      "expected_return": "-0.033333",
+      "source": "ml",
+      "reason": "negative_estimate",
+      "expected_return_used": "0.011111"
+    },
+    {
+      "ticker": "MOCK_FOXTROT",
+      "sector": null,
+      "expected_return": "0.022222",
+      "source": "historical",
+      "reason": "risk_tradeoff",
+      "expected_return_used": "0.033333"
+    },
+    {
+      "ticker": "MOCK_GOLF",
+      "sector": "Mock Sector",
+      "expected_return": "0.044444",
+      "source": "historical",
+      "reason": "sector_limit",
+      "expected_return_used": "0.044444"
+    }
+  ]
 }

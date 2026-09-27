@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -31,6 +32,14 @@ class PortfolioOverviewItem(BaseModel):
     unrealized_pnl_pct: Decimal | None
     holdings_count: int
     latest_recommendation: RecommendationSummary | None
+    # initial_capital plus every later deposit (net of fees).
+    total_deposited: Decimal | None = None
+    # Last change to cash or holdings.
+    updated_at: datetime | None = None
+    adopted_recommendation_id: UUID | None = None
+    adopted_at: datetime | None = None
+    # total_value of the last 30 daily snapshots, oldest first; empty if fewer than 2.
+    sparkline: list[Decimal] = []
 
 
 class PortfolioOverviewRead(BaseModel):

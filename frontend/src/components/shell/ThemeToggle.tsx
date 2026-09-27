@@ -1,6 +1,8 @@
 "use client";
 
+import { Moon, Sun } from "lucide-react";
 import { useSyncExternalStore } from "react";
+import { Button } from "@/components/ui/Button";
 
 type Theme = "light" | "dark";
 
@@ -19,7 +21,7 @@ function subscribe(onChange: () => void) {
   return () => observer.disconnect();
 }
 
-export function ThemeToggle() {
+function useTheme() {
   // null on the server; the inline script in app/layout.tsx has already set data-theme before paint.
   const theme = useSyncExternalStore<Theme | null>(subscribe, readTheme, () => null);
   const next: Theme = theme === "dark" ? "light" : "dark";
@@ -33,15 +35,25 @@ export function ThemeToggle() {
     }
   }
 
+  return { theme, next, toggle };
+}
+
+export function ThemeToggle() {
+  const { theme, next, toggle } = useTheme();
   return (
-    <button
-      type="button"
-      className="shell-icon-button"
-      onClick={toggle}
-      aria-label={theme ? `Switch to ${next} theme` : "Toggle theme"}
-      title={theme ? `Switch to ${next} theme` : "Toggle theme"}
-    >
-      <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
-    </button>
+    <Button variant="ghost" size="icon" onClick={toggle} aria-label={`Switch to ${next} theme`} title={`Switch to ${next} theme`}>
+      {theme === "dark" ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
+    </Button>
+  );
+}
+
+// Full-width variant for the mobile menu.
+export function ThemeToggleWide() {
+  const { theme, next, toggle } = useTheme();
+  return (
+    <Button variant="outline" className="mt-2 w-full" onClick={toggle}>
+      {theme === "dark" ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
+      {next === "light" ? "Light mode" : "Dark mode"}
+    </Button>
   );
 }

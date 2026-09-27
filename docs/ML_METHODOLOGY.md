@@ -155,7 +155,30 @@ python -m scripts.run_evaluation --universe NIFTY50 --start 2019-01-01 --blocks 
 - **Fast path:** for `return_model = "ml"`, the stored forecasts for the latest completed trading weekday and the current `model_version` are used for the requested tickers without training. If any requested ticker has no stored forecast (a custom ticker outside NIFTY 50, or no nightly run yet that day), the model is fitted on request on the requested tickers' panel, as before, and the stored values are kept for the tickers that have them. The response's `forecast_source` is `"precomputed"` when every ML forecast came from the store and `"on_request"` otherwise (null when historical only). **On-request training on a user's subset uses a different training panel than the pooled nightly model, so its forecasts can differ for the same stock and day; that is why the source is shown.**
 - **Model choice:** HistGradientBoosting was chosen because it had the highest mean IC in the NIFTY 50 evaluation below. That selection used the evaluation period, so its IC there is not an independent out-of-sample estimate for the chosen model.
 
-## 10. Results: NIFTY 50
+## 10. Optimizer (portfolio construction)
+
+Code: `backend/app/services/optimization.py`. The optimizer turns the expected returns (section 9) and the Ledoit-Wolf covariance Σ into target weights. Cash is an explicit variable with zero return and zero risk, so "all cash" is always a feasible answer and a tight profile never makes the problem infeasible.
+
+**Objective (default `mean_variance`):** maximize μₛᵀw − (λ/2)·wᵀΣw. λ is the risk aversion of the profile: conservative 8, moderate 4, aggressive 2 (`RISK_AVERSION`). The previous objective, maximize μₛᵀw, is kept as `objective="max_return"` for comparison; the backtest endpoint still uses it without shrinkage because backtest requests carry no risk profile.
+
+**Constraints:**
+- weights + cash = 1, cash ≥ 0;
+- 0 ≤ wᵢ ≤ `max_position_weight`;
+- portfolio volatility √(wᵀΣw) ≤ `target_volatility` (solved as a variance constraint);
+- for every sector, Σ wᵢ in that sector ≤ `max_sector_weight`, with sectors from `backend/app/data/sectors.json`; a ticker without a sector is its own one-ticker sector;
+- a ticker whose own estimate is ≤ 0 gets weight 0 (see shrinkage).
+
+**Shrinkage:** before optimizing, μₛ = α·μ + (1−α)·mean(μ) over the eligible tickers, with α = 0.5 (`SHRINKAGE_ALPHA`). This damps noisy forecasts toward the cross-sectional mean without changing their ranking. Because it can lift a negative estimate above zero, a ticker the model expects to fall is still never bought. The response keeps `expected_return` = the model's own estimate and adds `expected_return_used` = μₛ; the plan's estimated return is Σ wᵢ·μᵢ with the model's own estimates.
+
+**Why mean-variance:** maximizing return under caps fills the highest-estimate stocks to their caps in order, ignoring how risky or correlated they are. The variance penalty spreads weight toward stocks with a better return per unit of risk, and a higher λ gives a lower-volatility portfolio for the same inputs. When the volatility cap binds, the penalty is the same everywhere on that boundary, so both objectives can give the same portfolio (the conservative profile in the sensitivity report below).
+
+**Reasons reported:**
+- Not selected: `negative_estimate` (estimate ≤ 0), `sector_limit` (its sector's cap is binding), else `risk_tradeoff` (it adds more risk than return for the profile). Snapshots from before this optimizer may carry `risk_limit`.
+- Selected: `limit_reason` = `position_limit` (at the per-stock cap), `sector_limit` (its sector's cap is binding) or null.
+
+**Sensitivity report:** `python -m scripts.objective_sensitivity` (run from `backend/`, no database writes) prints, for NIFTY 50 and each profile, both objectives' number of holdings, largest and smallest weight, cash, ex-ante return and volatility and number of sectors, plus a λ grid (1, 2, 4, 8, 16) for the moderate profile.
+
+## 11. Results: NIFTY 50
 
 Source file: `backend/results/evaluation_2026-09-25.json` (gitignored). Produced by `python -m scripts.run_evaluation --universe NIFTY50 --no-cache`.
 
@@ -194,7 +217,7 @@ Per-block mean IC:
 - **The historical baseline** has the best hit rate. That is consistent with mostly positive trailing means during a rising market.
 - These are forecast metrics only. They say nothing yet about the performance of optimized portfolios.
 
-## 11. Known limitations
+## 12. Known limitations
 
 - **No NSE holiday calendar:** `is_trading_weekday` only knows Monday–Friday. On an exchange holiday the nightly job still runs (the latest feature date is then the previous session, so its stored `as_of` does not match the "latest completed trading weekday" and requests that day fall back to on-request training), and the snapshot script records a snapshot with unchanged prices.
 - **Overlapping labels:** 20-day forward returns on consecutive days overlap, so daily metric observations are autocorrelated. The IC standard error in the evaluation report is computed naively and is therefore too small. No significance tests are reported yet.

@@ -4,10 +4,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Holding, Portfolio, RecommendationSnapshot, RiskProfile
+from app.models import Holding, RiskProfile
 from app.schemas.drift import DriftPositionRead, PortfolioDriftRead
 from app.services import market_data
 from app.services.market_data import MarketDataUnavailableError
+from app.services.plans import is_target_stale, plan_target
 from app.services.portfolios import get_portfolio
 
 ZERO = Decimal("0")
@@ -24,12 +25,8 @@ def get_portfolio_drift(
     holdings = db.scalars(
         select(Holding).where(Holding.portfolio_id == portfolio_id)
     ).all()
-    target = db.scalars(
-        select(RecommendationSnapshot)
-        .where(RecommendationSnapshot.portfolio_id == portfolio_id)
-        .order_by(RecommendationSnapshot.created_at.desc())
-        .limit(1)
-    ).first()
+    # The adopted plan when set, else the latest recommendation.
+    target, adopted = plan_target(db, portfolio)
 
     target_weights = {
         item["ticker"]: Decimal(str(item["target_weight"]))
@@ -57,11 +54,7 @@ def get_portfolio_drift(
     )
     target_status = "missing"
     if target is not None:
-        target_status = (
-            "stale"
-            if portfolio.updated_at > target.created_at
-            else "current"
-        )
+        target_status = "stale" if is_target_stale(portfolio, target, adopted) else "current"
 
     threshold = risk_profile.drift_threshold if risk_profile else ZERO
     positions_by_ticker = {holding.ticker: holding for holding in holdings}

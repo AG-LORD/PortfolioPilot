@@ -54,30 +54,35 @@ export function StockSelector({ value, onChange, maxPositionWeight }: Props) {
 
   return (
     <div className="stock-selector">
-      <div className="option-grid" role="radiogroup" aria-label="Stocks to analyze">
-        <button
-          type="button"
-          role="radio"
-          aria-checked={value.mode === "nifty50"}
-          className={`option-card ${value.mode === "nifty50" ? "selected" : ""}`}
-          onClick={() => onChange({ mode: "nifty50" })}
-          style={{ textAlign: "left" }}
-        >
-          <span className="option-title">Use all NIFTY 50</span>
-          <span className="option-body">Let PortfolioPilot consider every stock in the index.</span>
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={value.mode === "custom"}
-          className={`option-card ${value.mode === "custom" ? "selected" : ""}`}
-          onClick={() => onChange({ mode: "custom", tickers: selected })}
-          style={{ textAlign: "left" }}
-        >
-          <span className="option-title">Pick stocks</span>
-          <span className="option-body">Choose the NIFTY 50 stocks you want considered.</span>
-        </button>
-      </div>
+      <fieldset className="stock-mode">
+        <legend className="visually-hidden">Stocks to analyse</legend>
+        <label className={`stock-mode-option ${value.mode === "nifty50" ? "is-active" : ""}`}>
+          <input
+            className="visually-hidden"
+            type="radio"
+            name="stock-mode"
+            checked={value.mode === "nifty50"}
+            onChange={() => onChange({ mode: "nifty50" })}
+          />
+          All NIFTY 50
+        </label>
+        <label className={`stock-mode-option ${value.mode === "custom" ? "is-active" : ""}`}>
+          <input
+            className="visually-hidden"
+            type="radio"
+            name="stock-mode"
+            checked={value.mode === "custom"}
+            onChange={() => onChange({ mode: "custom", tickers: selected })}
+          />
+          Pick stocks
+        </label>
+      </fieldset>
+
+      <p className="field-hint">
+        {value.mode === "nifty50"
+          ? "PortfolioPilot will consider every stock in the NIFTY 50 index."
+          : "Choose the NIFTY 50 stocks you want PortfolioPilot to consider."}
+      </p>
 
       {maxPositionWeight !== undefined && maxPositionWeight !== null && (
         <p className="field-hint">
@@ -91,25 +96,33 @@ export function StockSelector({ value, onChange, maxPositionWeight }: Props) {
           {!loadError && universeTickers === null && <p className="utility-text">Loading NIFTY 50 stocks…</p>}
           {universeTickers !== null && (
             <>
+              <input
+                className="text-input"
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search tickers"
+                aria-label="Search NIFTY 50 tickers"
+              />
+
               <div className="stock-picker-toolbar">
-                <input
-                  className="text-input"
-                  type="search"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search tickers"
-                  aria-label="Search NIFTY 50 tickers"
-                />
                 <span className="stock-picker-count" aria-live="polite">Selected: {selected.length}</span>
-                <button type="button" className="ghost-button" onClick={() => setTickers(universeTickers)}>
-                  Select all
-                </button>
-                <button type="button" className="ghost-button" onClick={() => setTickers([])}>
-                  Clear
-                </button>
+                <div className="stock-picker-actions">
+                  <button type="button" className="wizard-link-button" onClick={() => setTickers(universeTickers)}>
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="wizard-link-button"
+                    onClick={() => setTickers([])}
+                    disabled={selected.length === 0}
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
 
-              {selected.length > 0 ? (
+              {selected.length > 0 && (
                 <ul className="stock-chips" aria-label="Selected stocks">
                   {selected.map((ticker) => (
                     <li key={ticker} className="stock-chip">
@@ -118,11 +131,9 @@ export function StockSelector({ value, onChange, maxPositionWeight }: Props) {
                     </li>
                   ))}
                 </ul>
-              ) : (
-                <p className="field-hint" role="status" style={{ color: "var(--danger)" }}>Select at least 1 stock.</p>
               )}
 
-              <div className="stock-grid">
+              <div className="stock-grid" role="group" aria-label="NIFTY 50 stocks">
                 {visibleTickers.map((ticker) => (
                   <label key={ticker} className={`stock-option ${selectedSet.has(ticker) ? "selected" : ""}`}>
                     <input type="checkbox" checked={selectedSet.has(ticker)} onChange={() => toggle(ticker)} />

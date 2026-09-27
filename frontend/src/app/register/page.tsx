@@ -3,6 +3,9 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AUTH_INPUT, AuthField, AuthShell } from "@/components/auth/AuthShell";
+import { Button } from "@/components/ui/Button";
+import { Notice } from "@/components/ui/primitives";
 import { createClient } from "@/lib/supabase/client";
 
 export default function RegisterPage() {
@@ -35,28 +38,39 @@ export default function RegisterPage() {
   }
 
   return (
-    <main className="page-shell auth-shell">
-      <section className="card auth-panel">
-        <span className="eyebrow">PortfolioPilot</span>
-        <h1 className="page-title">Create your account</h1>
-        <p className="page-subtitle">Start managing a portfolio with risk in view.</p>
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <label className="field-group">
-            <span className="field-label">Email</span>
-            <input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} />
-          </label>
-          <label className="field-group">
-            <span className="field-label">Password</span>
-            <input type="password" autoComplete="new-password" minLength={8} required value={password} onChange={(event) => setPassword(event.target.value)} />
-          </label>
-          {error && <p className="notice error" role="alert">{error}</p>}
-          {message && <p className="notice success" role="status">{message}</p>}
-          <button type="submit" className="primary-button" disabled={submitting}>
-            {submitting ? "Creating account..." : "Create account"}
-          </button>
-        </form>
-        <p className="auth-switch">Already have an account? <Link href="/login">Log in</Link></p>
-      </section>
-    </main>
+    <AuthShell
+      title="Create your account"
+      subtitle="Start managing a portfolio with risk in view."
+      footer={
+        <>
+          Already have an account?{" "}
+          <Link href="/login" className="font-semibold text-primary hover:underline">
+            Log in
+          </Link>
+        </>
+      }
+    >
+      <form className="space-y-4" onSubmit={handleSubmit}>
+        <AuthField label="Email">
+          <input className={AUTH_INPUT} type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} />
+        </AuthField>
+        <AuthField label="Password">
+          <input
+            className={AUTH_INPUT}
+            type="password"
+            autoComplete="new-password"
+            minLength={8}
+            required
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </AuthField>
+        {error && <Notice tone="error">{error}</Notice>}
+        {message && <Notice tone="success">{message}</Notice>}
+        <Button type="submit" className="w-full" disabled={submitting}>
+          {submitting ? "Creating account…" : "Create account"}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

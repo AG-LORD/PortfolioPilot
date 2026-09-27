@@ -1,12 +1,20 @@
 import logging
 from dataclasses import asdict
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user_id, get_db
+from app.models import Portfolio, RiskProfile
+from app.schemas.charts import (
+    HistoryPreviewPoint,
+    HistoryPreviewRead,
+    PerformancePointRead,
+    PortfolioPerformanceRead,
+)
 from app.schemas.holding import HoldingRead
 from app.schemas.drift import PortfolioDriftRead
 from app.schemas.optimization import TargetAllocationItem, TargetAllocationRead
@@ -25,16 +33,20 @@ from app.schemas.recommendation import (
     RecommendationSummary,
 )
 from app.schemas.risk_analytics import RiskAnalyticsRead
-from app.schemas.transaction import TransactionCreate, TransactionRead
+from app.schemas.transaction import BatchTradeRequest, TransactionCreate, TransactionRead
 from app.schemas.valuation import PortfolioValuation
+from app.services.charts import get_history_preview, get_performance
 from app.services.expected_returns import InsufficientHistoryError
 from app.services.drift import get_portfolio_drift
 from app.services.market_data import MarketDataUnavailableError
 from app.services.optimization import OptimizationError, get_portfolio_target_allocation
 from app.services.overview import get_portfolio_overview
+from app.services.plans import adopt_recommendation
+from app.services.sectors import get_sector
 from app.services.portfolios import (
     add_capital,
     create_portfolio,
+    delete_portfolio,
     get_portfolio,
     list_holdings,
     list_portfolios,
@@ -53,7 +65,7 @@ from app.services.risk_analytics import (
 from app.services.rebalancing import create_rebalance_proposal, get_rebalance_proposal
 from app.services.rebalance_execution import RebalanceExecutionConflict, execute_rebalance_proposal
 from app.services.snapshots import create_portfolio_snapshot
-from app.services.transactions import execute_transaction, list_transactions
+from app.services.transactions import execute_transaction, execute_transaction_batch, list_transactions
 from app.services.universe import UniverseError
 from app.services.valuation import get_portfolio_valuation
 
@@ -97,6 +109,18 @@ def read_own_portfolio(
     return get_portfolio(db, user_id, portfolio_id)
 
 
+@router.delete("/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_own_portfolio(
+    portfolio_id: UUID,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """Permanently deletes the portfolio with its holdings, transactions,
+    snapshots, recommendations and rebalance proposals."""
+    delete_portfolio(db, user_id, portfolio_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/{portfolio_id}/transactions", response_model=TransactionRead)
 def create_transaction(
     portfolio_id: UUID,
@@ -105,6 +129,18 @@ def create_transaction(
     db: Session = Depends(get_db),
 ):
     return execute_transaction(db, user_id, portfolio_id, data)
+
+
+@router.post("/{portfolio_id}/transactions/batch", response_model=list[TransactionRead])
+def create_transaction_batch(
+    portfolio_id: UUID,
+    data: BatchTradeRequest,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """Records 1-50 BUY/SELL trades atomically: a failing row (e.g. insufficient
+    cash) rolls back every row and returns 422 naming it."""
+    return execute_transaction_batch(db, user_id, portfolio_id, data)
 
 
 @router.get("/{portfolio_id}/holdings", response_model=list[HoldingRead])
@@ -370,6 +406,11 @@ def read_portfolio_recommendation(
                 "typical_estimate": (
                     None if item.get("typical_estimate") is None else Decimal(str(item["typical_estimate"]))
                 ),
+                "sector": get_sector(item["ticker"]),
+                "expected_return_used": (
+                    None if item.get("expected_return_used") is None else Decimal(str(item["expected_return_used"]))
+                ),
+                "limit_reason": item.get("limit_reason"),
             }
             for item in snapshot.allocations
         ],
@@ -380,9 +421,87 @@ def read_portfolio_recommendation(
         constraints={
             "max_position_weight": snapshot.max_position_weight,
             "target_volatility": snapshot.target_volatility,
+            # Not stored on the snapshot; the portfolio's risk profile never changes.
+            "max_sector_weight": _max_sector_weight(db, snapshot.portfolio_id),
         },
         excluded=[{"ticker": item["ticker"], "reason": item["reason"]} for item in snapshot.excluded],
+        # Null for snapshots saved before not_selected existed ("unknown", not "none").
+        not_selected=None
+        if snapshot.not_selected is None
+        else [
+            {
+                "ticker": item["ticker"],
+                "sector": get_sector(item["ticker"]),
+                "expected_return": Decimal(str(item["expected_return"])),
+                "source": item["source"],
+                "reason": item["reason"],
+                "expected_return_used": (
+                    None if item.get("expected_return_used") is None else Decimal(str(item["expected_return_used"]))
+                ),
+            }
+            for item in snapshot.not_selected
+        ],
     )
+
+
+@router.post(
+    "/{portfolio_id}/recommendations/{recommendation_id}/adopt", response_model=PortfolioRead
+)
+def adopt_portfolio_recommendation(
+    portfolio_id: UUID,
+    recommendation_id: UUID,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """Makes this recommendation the portfolio's plan. Nothing is bought."""
+    return adopt_recommendation(db, user_id, portfolio_id, recommendation_id)
+
+
+@router.get(
+    "/{portfolio_id}/recommendations/{recommendation_id}/history-preview",
+    response_model=HistoryPreviewRead,
+)
+def read_recommendation_history_preview(
+    portfolio_id: UUID,
+    recommendation_id: UUID,
+    period: Literal["1y"] = "1y",
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    try:
+        result, note = get_history_preview(db, user_id, portfolio_id, recommendation_id, period)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except MarketDataUnavailableError as exc:
+        logger.warning("History preview failed for portfolio %s: %s", portfolio_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Price history is currently unavailable for this plan.",
+        ) from exc
+    return HistoryPreviewRead(
+        start=result.start,
+        end=result.end,
+        points=[HistoryPreviewPoint(date=p.date, mix=p.mix, benchmark=p.benchmark) for p in result.points],
+        note=note,
+    )
+
+
+@router.get("/{portfolio_id}/performance", response_model=PortfolioPerformanceRead)
+def read_portfolio_performance(
+    portfolio_id: UUID,
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    points = get_performance(db, user_id, portfolio_id)
+    return PortfolioPerformanceRead(
+        points=[PerformancePointRead(date=p.date, portfolio=p.portfolio, benchmark=p.benchmark) for p in points]
+    )
+
+
+def _max_sector_weight(db: Session, portfolio_id: UUID) -> Decimal | None:
+    portfolio = db.get(Portfolio, portfolio_id)
+    risk_profile = db.get(RiskProfile, portfolio.risk_profile_id) if portfolio else None
+    return risk_profile.max_sector_weight if risk_profile else None
 
 
 @router.post("/{portfolio_id}/capital", response_model=PortfolioRead)

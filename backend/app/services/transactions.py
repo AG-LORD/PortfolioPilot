@@ -7,8 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.models import Holding, Transaction
-from app.schemas.transaction import TransactionCreate
+from app.models import Holding, Portfolio, Transaction
+from app.schemas.transaction import BatchTradeItem, TransactionCreate
 from app.services.portfolios import get_portfolio_for_update
 
 _TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9&.\-]{0,19}$")
@@ -40,6 +40,58 @@ def execute_transaction(
     db: Session, user_id: UUID, portfolio_id: UUID, data: TransactionCreate
 ) -> Transaction:
     portfolio = get_portfolio_for_update(db, user_id, portfolio_id)
+    transaction = _apply_transaction(db, portfolio, data)
+
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+    db.refresh(transaction)
+    return transaction
+
+
+def execute_transaction_batch(
+    db: Session, user_id: UUID, portfolio_id: UUID, items: list[BatchTradeItem]
+) -> list[Transaction]:
+    """All or nothing: rows apply in order on one database transaction; the
+    first failing row rolls every row back and raises 422 naming that row."""
+    portfolio = get_portfolio_for_update(db, user_id, portfolio_id)
+    transactions = []
+    for index, item in enumerate(items, start=1):
+        data = TransactionCreate(
+            ticker=item.ticker,
+            transaction_type=item.side,
+            quantity=item.quantity,
+            price=item.price,
+            fees=item.fees,
+        )
+        try:
+            transactions.append(_apply_transaction(db, portfolio, data))
+            db.flush()
+        except HTTPException as exc:
+            db.rollback()
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"Row {index} ({item.side} {item.ticker.strip().upper()}): {exc.detail}. No trades were recorded.",
+            ) from exc
+        except SQLAlchemyError:
+            db.rollback()
+            raise
+
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+    for transaction in transactions:
+        db.refresh(transaction)
+    return transactions
+
+
+def _apply_transaction(db: Session, portfolio: Portfolio, data: TransactionCreate) -> Transaction:
+    """Applies one trade to the locked portfolio without committing."""
+    portfolio_id = portfolio.id
     ticker = _normalize_transaction_ticker(data.ticker, data.transaction_type)
 
     holding = db.scalar(
@@ -108,13 +160,6 @@ def execute_transaction(
         source="manual",
     )
     db.add(transaction)
-
-    try:
-        db.commit()
-    except SQLAlchemyError:
-        db.rollback()
-        raise
-    db.refresh(transaction)
     return transaction
 
 def list_transactions(db: Session, user_id: UUID, portfolio_id: UUID) -> list[Transaction]:

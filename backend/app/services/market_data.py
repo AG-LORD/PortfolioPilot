@@ -18,6 +18,12 @@ import yfinance as yf
 
 NO_DATA_REASON = "no historical data returned"
 
+# Benchmark indices, stored in the price cache under an internal ticker that
+# can never be an NSE symbol (the underscore fails the transaction ticker
+# check). They bypass the ".NS" suffix; same cache, refresh and seam rules.
+NIFTY50_INDEX = "NIFTY50_INDEX"
+BENCHMARK_SYMBOLS = {NIFTY50_INDEX: "^NSEI"}
+
 
 class MarketDataUnavailableError(Exception):
     def __init__(self, ticker: str, reason: str):
@@ -37,6 +43,8 @@ class PricePoint:
 
 
 def _to_yfinance_symbol(ticker: str) -> str:
+    if ticker.upper() in BENCHMARK_SYMBOLS:
+        return BENCHMARK_SYMBOLS[ticker.upper()]
     return f"{ticker.upper()}.NS"
 
 
@@ -131,6 +139,9 @@ def download_history_batch(
             ticker_frame = frame[symbol]
         else:
             ticker_frame = frame
+        if ticker.upper() in BENCHMARK_SYMBOLS:
+            # Index bars can come without a volume; that is not missing data.
+            ticker_frame = ticker_frame.fillna({"Volume": 0})
         # A combined frame has the union of all tickers' dates; rows where
         # this ticker has no bar are NaN and are not real data.
         ticker_frame = ticker_frame.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
