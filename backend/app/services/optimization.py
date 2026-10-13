@@ -250,6 +250,15 @@ def optimize_target_weights(
         weights[:n] *= target_vol / np.sqrt(variance)
         weights[n] = 1.0 - weights[:n].sum()
 
+    # The final numerical volatility correction can make a position that
+    # survived the re-solve loop fall below the minimum.  Move those weights
+    # to cash rather than re-solving or redistributing them: removing assets
+    # cannot increase volatility, sector exposure, or any per-stock weight.
+    small = small_positions(weights)
+    if small.size:
+        too_small.update(int(i) for i in small)
+        weights = _to_cash(weights, small, n)
+
     asset_weights = np.clip(weights[:n], 0.0, None)
 
     binding = {

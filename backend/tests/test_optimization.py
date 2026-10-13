@@ -1,4 +1,5 @@
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -497,6 +498,47 @@ def test_all_cash_is_still_feasible_and_negative_estimates_are_never_bought():
 
 
 # --- minimum position ------------------------------------------------------------
+
+
+def test_final_volatility_rescale_removes_a_newly_subminimum_position(monkeypatch):
+    """The final numerical vol correction must not leave a 0 < w < minimum.
+
+    SLSQP may return a solution that exceeds the volatility target by less
+    than FEASIBILITY_TOLERANCE.  This input passes that feasibility check and
+    therefore reaches the final rescale, which turns A from 2.0001% into less
+    than 2%.  The position was not eligible for the preceding cleanup loop.
+    """
+    from app.services.optimization import MIN_POSITION_WEIGHT
+
+    solver_weights = np.array([0.020001, 0.5, 0.0, 0.479999])  # A, B, C, cash
+    raw_volatility = float(np.sqrt(solver_weights[:2] @ solver_weights[:2]))
+    target_volatility = Decimal(str(raw_volatility - 0.00009))
+
+    def nearly_feasible_solution(*args, **kwargs):
+        return SimpleNamespace(x=solver_weights.copy(), success=True)
+
+    monkeypatch.setattr("app.services.optimization.minimize", nearly_feasible_solution)
+
+    result = optimize_target_weights(
+        ["A", "B", "C"],
+        [Decimal("0.10"), Decimal("0.08"), Decimal("-0.10")],
+        _diag_cov([Decimal("1"), Decimal("1"), Decimal("1")]),
+        max_position_weight=Decimal("0.6"),
+        target_volatility=target_volatility,
+        max_sector_weight=Decimal("0.6"),
+        sector_map={"A": "A_SECTOR", "B": "B_SECTOR", "C": "C_SECTOR"},
+        shrinkage_alpha=1.0,
+    )
+
+    weights = {allocation.ticker: allocation.target_weight for allocation in result.allocations}
+    assert weights["A"] == 0
+    assert weights["C"] == 0  # a non-positive unshrunk return remains excluded
+    assert result.too_small == {"A"}
+    assert all(weight == 0 or weight >= Decimal(str(MIN_POSITION_WEIGHT)) for weight in weights.values())
+    assert sum(weights.values()) + result.cash_weight == Decimal("1")
+    assert result.cash_weight > Decimal("0")
+    assert float(weights["B"]) <= 0.6
+    assert float(weights["B"]) <= float(target_volatility) + 1e-6
 
 
 def _random_problem(seed, n=25):
