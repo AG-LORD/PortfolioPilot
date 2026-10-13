@@ -1,6 +1,7 @@
 """Causal pivots and Dow Theory structure features."""
 
 import numpy as np
+import pytest
 
 from app.ml.feature_groups import dow
 from app.ml.feature_groups.pivots import HIGH, LOW, Pivot, SwingTracker, find_pivots, pivots_by_confirmation
@@ -89,6 +90,9 @@ def test_uptrend_has_higher_highs_and_higher_lows():
     assert f["dow_k2_strength"] == 1
     assert f["dow_k2_run"] > 2
     assert f["dow_k2_has_structure"] == 1
+    assert f["dow_k2_strength_valid"] == 1
+    assert f["dow_k2_dist_high_valid"] == 1
+    assert f["dow_k2_dist_low_valid"] == 1
 
 
 def test_downtrend_has_lower_highs_and_lower_lows():
@@ -321,6 +325,7 @@ def test_counts_only_cover_the_window_and_bars_since_is_capped():
     last = dow.compute(_frame(close)).iloc[-1]
     assert last["dow_k2_hh"] == last["dow_k2_hl"] == 0
     assert last["dow_k2_strength"] == 0
+    assert last["dow_k2_strength_valid"] == 0
     assert last["dow_k2_bars_since"] == dow.WINDOWS[2]
 
 
@@ -335,3 +340,62 @@ def test_flat_prices_give_neutral_finite_features():
     assert np.isfinite(features.to_numpy()).all()
     assert (features.filter(like="trend") == 0).all().all()
     assert (features.filter(like="dist") == 0).all().all()
+    for k in dow.PIVOT_SCALES:
+        assert (features[f"dow_k{k}_strength_valid"] == 0).all()
+        assert (features[f"dow_k{k}_dist_high_valid"] == 0).all()
+        assert (features[f"dow_k{k}_dist_low_valid"] == 0).all()
+
+
+def test_dow_validity_is_false_when_history_has_no_confirmed_pivots():
+    features = dow.compute(_frame(np.full(12, 100.0)))
+    for k in dow.PIVOT_SCALES:
+        assert (features[f"dow_k{k}_strength_valid"] == 0).all()
+        assert (features[f"dow_k{k}_dist_high_valid"] == 0).all()
+        assert (features[f"dow_k{k}_dist_low_valid"] == 0).all()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_valid"),
+    [
+        ("valid", 1.0),
+        ("nan_close", 0.0),
+        ("inf_close", 0.0),
+        ("zero_atr", 0.0),
+        ("nan_atr", 0.0),
+        ("inf_atr", 0.0),
+    ],
+)
+def test_dow_distance_validity_requires_finite_close_and_positive_finite_atr(
+    monkeypatch, case, expected_valid
+):
+    n = 40
+    close = np.full(n, 100.0)
+    high = close + 1.0
+    low = close - 1.0
+    pivots = [Pivot(HIGH, 5, 7, 110.0), Pivot(LOW, 10, 12, 90.0)]
+    monkeypatch.setattr(dow, "find_pivots", lambda high, low, k: pivots)
+
+    if case == "nan_close":
+        close[-1] = np.nan
+    elif case == "inf_close":
+        close[-1] = np.inf
+    elif case == "zero_atr":
+        high[:] = close
+        low[:] = close
+    elif case == "nan_atr":
+        high[-1] = np.nan
+    elif case == "inf_atr":
+        high[-1] = np.inf
+
+    prices = ohlcv_frame(close, high=high, low=low)
+    features = dow.scale_features(prices, k=2)
+    row = -1
+
+    assert features["dist_high_valid"][row] == expected_valid
+    assert features["dist_low_valid"][row] == expected_valid
+    if expected_valid:
+        assert features["dist_high"][row] == pytest.approx(-5.0)
+        assert features["dist_low"][row] == pytest.approx(5.0)
+    else:
+        assert features["dist_high"][row] == 0
+        assert features["dist_low"][row] == 0

@@ -14,13 +14,15 @@ dow_k{k}_trend         +1 if the latest high is HH and the latest low is HL,
 dow_k{k}_hh/hl/lh/ll   number of pivots of that class confirmed in (t-W, t].
 dow_k{k}_strength      (HH + HL - LH - LL) / (HH + HL + LH + LL) over the
                        same window; 0 when the window has no classified pivot.
+dow_k{k}_strength_valid 1 when the window contains a classified pivot.
 dow_k{k}_run           signed length of the current run of bullish (HH/HL,
                        +) or bearish (LH/LL, -) classifications in pivot
                        order; an "equal" pivot resets it to 0; clipped to +-10.
 dow_k{k}_dist_high     (close_t - last confirmed swing high) / ATR14_t,
 dow_k{k}_dist_low      (close_t - last confirmed swing low) / ATR14_t; 0 when
                        there is no such pivot or ATR is 0/undefined; clipped
-                       to +-10.
+to +-10. Matching *_valid columns identify when the
+pivot and positive finite ATR are available.
 dow_k{k}_bars_since    bars since the last pivot confirmation, capped at W
                        (W when none yet).
 dow_k{k}_break         -1 when the trend is +1 and close_t is below the last
@@ -68,7 +70,8 @@ RUN_CLIP = 10
 HH, LH, HL, LL, EQUAL = "hh", "lh", "hl", "ll", "equal"
 BULLISH, BEARISH = {HH, HL}, {LH, LL}
 PER_SCALE = (
-    "trend", "hh", "hl", "lh", "ll", "strength", "run", "dist_high", "dist_low", "bars_since", "break",
+    "trend", "hh", "hl", "lh", "ll", "strength", "strength_valid", "run",
+    "dist_high", "dist_high_valid", "dist_low", "dist_low_valid", "bars_since", "break",
     "has_structure", "persistent_state", "bars_since_state_change", "reversal_confirmed",
 )
 AGREEMENT = "dow_trend_agreement"
@@ -194,9 +197,16 @@ def scale_features(prices: pd.DataFrame, k: int) -> dict[str, np.ndarray]:
         for c in (HH, HL, LH, LL):
             out[c][t] = counts[c]
         out["strength"][t] = safe_div(counts[HH] + counts[HL] - counts[LH] - counts[LL], total)
+        out["strength_valid"][t] = float(total > 0)
         out["run"][t] = max(min(run, RUN_CLIP), -RUN_CLIP)
         out["dist_high"][t] = clip(safe_div(close[t] - last_high.price, atr[t]), DIST_CLIP) if last_high else 0.0
         out["dist_low"][t] = clip(safe_div(close[t] - last_low.price, atr[t]), DIST_CLIP) if last_low else 0.0
+        out["dist_high_valid"][t] = float(
+            last_high is not None and np.isfinite(close[t]) and np.isfinite(atr[t]) and atr[t] > 0
+        )
+        out["dist_low_valid"][t] = float(
+            last_low is not None and np.isfinite(close[t]) and np.isfinite(atr[t]) and atr[t] > 0
+        )
         out["bars_since"][t] = window if last_confirmed is None else min(t - last_confirmed, window)
         if trend == 1 and close[t] < last_low.price:
             out["break"][t] = -1

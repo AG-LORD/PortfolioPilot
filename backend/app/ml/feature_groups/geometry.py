@@ -5,41 +5,56 @@ the ablation tests. Prices enter as log closes, and distances are divided by
 volatility or ATR, so every feature is comparable across stocks and
 unchanged when all prices are multiplied by a constant.
 
-sigma_t = std of daily log returns over the last 60 bars (ddof 1). Any
-feature whose denominator (sigma, ATR, a leg length) is 0 or undefined is 0.
+sigma_t = std of daily log returns over the last 60 bars (ddof 1). A normalized
+feature whose denominator (sigma, ATR, a leg length) is 0 or unavailable keeps
+its existing zero fallback; its matching *_valid column is 0.
 
 Rolling fits (w = 20 and 60 bars, x = 0..w-1, y = log close over the window):
 geo_slope_{w}      linear slope * sqrt(w) / sigma (fitted move over the window
                    in units of its expected random-walk size), clipped +-10.
-geo_r2_{w}         R^2 of that linear fit, in [0, 1]; 0 for a flat window.
+geo_r2_{w}         R^2 of that linear fit, in [0, 1]; 0 for a flat window,
+                   with *_valid 0 when the window is flat or incomplete.
 geo_accel_{w}      quadratic coefficient * w^2 / (sigma * sqrt(w)), clipped +-10.
 geo_slope_change   geo_slope_20 now minus 10 bars ago, clipped +-10.
 geo_curvature      (5-bar log return - the 5-bar log return before it) /
                    (sigma * sqrt(5)), a second difference, clipped +-10.
 geo_efficiency_{w} |log close_t - log close_{t-w}| / sum of |daily log
-                   changes| over w, in [0, 1] (Kaufman efficiency ratio).
+                   changes| over w, in [0, 1] (Kaufman efficiency ratio);
+                   *_valid is 0 for a zero-length or incomplete path.
 
 From the alternating swings of scale k = 5 (pivots.py; confirmed pivots only),
 with S1 the latest swing, S2 and S3 the ones before it:
 geo_has_swings     1 once three swings exist (else every swing feature is 0).
 geo_retracement    (close_t - S1) / (S2 - S1): how far the move since S1 has
-                   gone back over the leg S2 -> S1, clipped to [-1, 2].
-geo_leg_ratio      log(|S1 - S2| / |S2 - S3|), clipped +-3.
-geo_duration_ratio log(bars S2 -> S1 / bars S3 -> S2), clipped +-3.
+                   gone back over the leg S2 -> S1, clipped to [-1, 2];
+                   *_valid requires three swings and a non-zero leg.
+geo_leg_ratio      log(|S1 - S2| / |S2 - S3|), clipped +-3; valid when both
+                   price-leg magnitudes are finite and positive.
+geo_duration_ratio log(bars S2 -> S1 / bars S3 -> S2), clipped +-3; valid when
+                   both durations are finite and positive.
 geo_leg_symmetry   min/max of the two leg sizes times min/max of their
-                   durations, in [0, 1].
+                   durations, in [0, 1]; valid when each pair is finite,
+                   non-negative, and at least one value in each pair is
+                   positive.
 geo_leg_height     |S1 - S2| / ATR14_t, clipped to [0, 30].
-geo_leg_width      bars S2 -> S1 / 60, clipped to [0, 3].
+geo_leg_width      bars S2 -> S1 / 60, clipped to [0, 3]; a zero duration is
+                   valid and yields a legitimate zero.
 Trendlines through the last two swing highs (resistance) and the last two
 swing lows (support), in log price against bar position:
 geo_convergence    (support slope - resistance slope) * 20 / sigma, clipped
-                   +-10; positive means the lines converge.
+                   +-10; positive means the lines converge; *_valid requires
+                   both lines and positive finite sigma.
 geo_dist_resistance (resistance line at t - close_t) / ATR14_t, clipped +-10.
 geo_dist_support    (close_t - support line at t) / ATR14_t, clipped +-10.
+Each geometric measurement (except the explicit geo_has_swings indicator) has
+a matching *_valid flag: 1 only when its required history and non-zero
+denominators are available. The neutral zero fallbacks remain unchanged when
+a measurement is invalid.
 
 Fibonacci (separate group, descriptive only; not assumed predictive):
 fib_nearest_dist   |geo_retracement - nearest of 0.382, 0.5, 0.618|; 1 when
-                   there are no swings.
+                   there are no swings; fib_nearest_dist_valid is 1 only when
+                   the retracement is valid.
 """
 
 import math
@@ -70,23 +85,38 @@ FIB_LEVELS = (0.382, 0.5, 0.618)
 
 COLUMNS = (
     *(f"geo_slope_{w}" for w in FIT_WINDOWS),
+    *(f"geo_slope_{w}_valid" for w in FIT_WINDOWS),
     *(f"geo_r2_{w}" for w in FIT_WINDOWS),
+    *(f"geo_r2_{w}_valid" for w in FIT_WINDOWS),
     *(f"geo_accel_{w}" for w in FIT_WINDOWS),
+    *(f"geo_accel_{w}_valid" for w in FIT_WINDOWS),
     "geo_slope_change",
+    "geo_slope_change_valid",
     "geo_curvature",
+    "geo_curvature_valid",
     *(f"geo_efficiency_{w}" for w in EFFICIENCY_WINDOWS),
+    *(f"geo_efficiency_{w}_valid" for w in EFFICIENCY_WINDOWS),
     "geo_has_swings",
     "geo_retracement",
+    "geo_retracement_valid",
     "geo_leg_ratio",
+    "geo_leg_ratio_valid",
     "geo_duration_ratio",
+    "geo_duration_ratio_valid",
     "geo_leg_symmetry",
+    "geo_leg_symmetry_valid",
     "geo_leg_height",
+    "geo_leg_height_valid",
     "geo_leg_width",
+    "geo_leg_width_valid",
     "geo_convergence",
+    "geo_convergence_valid",
     "geo_dist_resistance",
+    "geo_dist_resistance_valid",
     "geo_dist_support",
+    "geo_dist_support_valid",
 )
-FIB_COLUMNS = ("fib_nearest_dist",)
+FIB_COLUMNS = ("fib_nearest_dist", "fib_nearest_dist_valid")
 
 
 def _rolling_fits(y: np.ndarray, w: int):
@@ -130,17 +160,31 @@ def _path_features(prices: pd.DataFrame) -> tuple[dict[str, np.ndarray], np.ndar
     out = {}
     for w in FIT_WINDOWS:
         slope, r2, quad = _rolling_fits(log_close, w)
+        fit_available = np.isfinite(slope) & np.isfinite(quad)
+        sigma_valid = np.isfinite(sigma) & (sigma > 0)
+        window_var = pd.Series(log_close).rolling(w, min_periods=w).var(ddof=0).to_numpy()
         out[f"geo_slope_{w}"] = _scaled(slope * math.sqrt(w), sigma)
-        out[f"geo_r2_{w}"] = np.where(np.isfinite(sigma), r2, np.nan)
+        out[f"geo_slope_{w}_valid"] = (fit_available & sigma_valid).astype(float)
+        out[f"geo_r2_{w}"] = np.where(np.isfinite(window_var), r2, np.nan)
+        out[f"geo_r2_{w}_valid"] = (
+            np.isfinite(r2) & np.isfinite(window_var) & (window_var > 0)
+        ).astype(float)
         out[f"geo_accel_{w}"] = _scaled(quad * w**2, sigma * math.sqrt(w))
+        out[f"geo_accel_{w}_valid"] = (fit_available & sigma_valid).astype(float)
     slope_20 = out["geo_slope_20"]
     change = np.full(len(slope_20), np.nan)
     change[10:] = slope_20[10:] - slope_20[:-10]
     out["geo_slope_change"] = np.clip(change, -CLIP, CLIP)
+    slope_change_valid = np.zeros(len(slope_20), dtype=bool)
+    slope_change_valid[10:] = (
+        out["geo_slope_20_valid"][10:].astype(bool) & out["geo_slope_20_valid"][:-10].astype(bool)
+    )
+    out["geo_slope_change_valid"] = slope_change_valid.astype(float)
     r5 = pd.Series(log_close).diff(5).to_numpy()
     second = np.full(len(r5), np.nan)
     second[5:] = r5[5:] - r5[:-5]
     out["geo_curvature"] = _scaled(second, sigma * math.sqrt(5))
+    out["geo_curvature_valid"] = (np.isfinite(second) & np.isfinite(sigma) & (sigma > 0)).astype(float)
     absolute = daily.abs()
     for w in EFFICIENCY_WINDOWS:
         net = pd.Series(log_close).diff(w).abs().to_numpy()
@@ -148,10 +192,11 @@ def _path_features(prices: pd.DataFrame) -> tuple[dict[str, np.ndarray], np.ndar
         with np.errstate(divide="ignore", invalid="ignore"):
             eff = np.where(path > 0, net / path, 0.0)
         out[f"geo_efficiency_{w}"] = np.where(np.isfinite(path), np.clip(eff, 0, 1), np.nan)
+        out[f"geo_efficiency_{w}_valid"] = (np.isfinite(path) & (path > 0) & np.isfinite(net)).astype(float)
     return out, sigma
 
 
-def _line_at(a, b, t: int) -> float:
+def _line_at(a, b, t: int) -> tuple[float, float]:
     """Log-price line through swings a and b (by occurrence bar), evaluated at bar t."""
     slope = safe_div(math.log(b.price) - math.log(a.price), b.occurred - a.occurred)
     return math.log(b.price) + slope * (t - b.occurred), slope
@@ -164,8 +209,11 @@ def _swing_features(prices: pd.DataFrame, sigma: np.ndarray) -> dict[str, np.nda
     atr = atr_abs(prices)
     n = len(close)
     names = (
-        "geo_has_swings", "geo_retracement", "geo_leg_ratio", "geo_duration_ratio", "geo_leg_symmetry",
-        "geo_leg_height", "geo_leg_width", "geo_convergence", "geo_dist_resistance", "geo_dist_support",
+        "geo_has_swings", "geo_retracement", "geo_retracement_valid", "geo_leg_ratio", "geo_leg_ratio_valid",
+        "geo_duration_ratio", "geo_duration_ratio_valid", "geo_leg_symmetry", "geo_leg_symmetry_valid",
+        "geo_leg_height", "geo_leg_height_valid", "geo_leg_width", "geo_leg_width_valid",
+        "geo_convergence", "geo_convergence_valid", "geo_dist_resistance", "geo_dist_resistance_valid",
+        "geo_dist_support", "geo_dist_support_valid",
     )
     out = {name: np.zeros(n) for name in names}
     buckets = pivots_by_confirmation(find_pivots(high, low, SWING_SCALE), n)
@@ -179,27 +227,61 @@ def _swing_features(prices: pd.DataFrame, sigma: np.ndarray) -> dict[str, np.nda
         leg1, leg2 = s1.price - s2.price, s2.price - s3.price
         d1, d2 = s1.occurred - s2.occurred, s2.occurred - s3.occurred
         out["geo_has_swings"][t] = 1.0
-        out["geo_retracement"][t] = min(max(safe_div(close[t] - s1.price, s2.price - s1.price), -1.0), 2.0)
+        retracement_denominator = s2.price - s1.price
+        retracement_valid = (
+            np.isfinite(close[t]) and np.isfinite(s1.price) and np.isfinite(retracement_denominator)
+            and retracement_denominator != 0
+        )
+        out["geo_retracement_valid"][t] = float(retracement_valid)
+        if retracement_valid:
+            out["geo_retracement"][t] = min(max((close[t] - s1.price) / retracement_denominator, -1.0), 2.0)
         # A bar that is both a swing high and a swing low gives a zero-length leg.
-        if leg1 and leg2 and d1 > 0 and d2 > 0:
+        price_legs_valid = (
+            np.isfinite(leg1) and np.isfinite(leg2) and leg1 != 0 and leg2 != 0
+        )
+        out["geo_leg_ratio_valid"][t] = float(price_legs_valid)
+        if price_legs_valid:
             out["geo_leg_ratio"][t] = clip(math.log(abs(leg1) / abs(leg2)), LOG_CLIP)
+        price_symmetry_valid = (
+            np.isfinite(leg1) and np.isfinite(leg2) and max(abs(leg1), abs(leg2)) > 0
+        )
+        duration_symmetry_valid = (
+            np.isfinite(d1) and np.isfinite(d2) and d1 >= 0 and d2 >= 0 and max(d1, d2) > 0
+        )
+        out["geo_leg_symmetry_valid"][t] = float(price_symmetry_valid and duration_symmetry_valid)
+        if price_symmetry_valid and duration_symmetry_valid:
             out["geo_leg_symmetry"][t] = (min(abs(leg1), abs(leg2)) / max(abs(leg1), abs(leg2))) * (
                 min(d1, d2) / max(d1, d2)
             )
         if d1 > 0 and d2 > 0:
             out["geo_duration_ratio"][t] = clip(math.log(d1 / d2), LOG_CLIP)
-        out["geo_leg_height"][t] = min(max(safe_div(abs(leg1), atr[t]), 0.0), 30.0)
-        out["geo_leg_width"][t] = min(d1 / 60, 3.0)
+            out["geo_duration_ratio_valid"][t] = 1.0
+        if np.isfinite(leg1) and np.isfinite(atr[t]) and atr[t] > 0:
+            out["geo_leg_height"][t] = min(max(abs(leg1) / atr[t], 0.0), 30.0)
+            out["geo_leg_height_valid"][t] = 1.0
+        if np.isfinite(d1) and d1 >= 0:
+            out["geo_leg_width"][t] = min(d1 / 60, 3.0)
+            out["geo_leg_width_valid"][t] = 1.0
 
         highs = [p for p in swings if p.kind == HIGH][-2:]
         lows = [p for p in swings if p.kind != HIGH][-2:]
-        if len(highs) == 2 and len(lows) == 2:
+        lines_valid = (
+            len(highs) == 2 and len(lows) == 2
+            and highs[1].occurred != highs[0].occurred and lows[1].occurred != lows[0].occurred
+            and all(np.isfinite(p.price) and p.price > 0 for p in highs + lows)
+        )
+        if lines_valid:
             res_t, res_slope = _line_at(highs[0], highs[1], t)
             sup_t, sup_slope = _line_at(lows[0], lows[1], t)
-            if np.isfinite(sigma[t]) and sigma[t] > 0:
+            if np.isfinite(sigma[t]) and sigma[t] > 0 and np.isfinite(res_slope) and np.isfinite(sup_slope):
                 out["geo_convergence"][t] = clip((sup_slope - res_slope) * 20 / sigma[t], CLIP)
-            out["geo_dist_resistance"][t] = clip(safe_div(math.exp(res_t) - close[t], atr[t]), CLIP)
-            out["geo_dist_support"][t] = clip(safe_div(close[t] - math.exp(sup_t), atr[t]), CLIP)
+                out["geo_convergence_valid"][t] = 1.0
+            if np.isfinite(atr[t]) and atr[t] > 0 and np.isfinite(res_t) and np.isfinite(close[t]):
+                out["geo_dist_resistance"][t] = clip(safe_div(math.exp(res_t) - close[t], atr[t]), CLIP)
+                out["geo_dist_resistance_valid"][t] = 1.0
+            if np.isfinite(atr[t]) and atr[t] > 0 and np.isfinite(sup_t) and np.isfinite(close[t]):
+                out["geo_dist_support"][t] = clip(safe_div(close[t] - math.exp(sup_t), atr[t]), CLIP)
+                out["geo_dist_support_valid"][t] = 1.0
     return out
 
 
@@ -214,5 +296,8 @@ def compute_fibonacci(prices: pd.DataFrame) -> pd.DataFrame:
     swings = _swing_features(prices, sigma)
     retracement = swings["geo_retracement"]
     nearest = np.min([np.abs(retracement - level) for level in FIB_LEVELS], axis=0)
+    valid = swings["geo_retracement_valid"].astype(bool)
     values = np.where(swings["geo_has_swings"] == 1, nearest, 1.0)
-    return pd.DataFrame({"fib_nearest_dist": values}, index=prices.index)
+    return pd.DataFrame(
+        {"fib_nearest_dist": values, "fib_nearest_dist_valid": valid.astype(float)}, index=prices.index
+    )
