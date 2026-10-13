@@ -12,7 +12,11 @@ from app.database import Base
 from app.models import Holding, Portfolio, RebalanceProposal, RecommendationSnapshot, RiskProfile, Transaction, UserProfile
 from app.services.market_data import MarketDataUnavailableError
 from app.services import rebalancing as rebalance_service
-from app.services.rebalancing import create_rebalance_proposal, get_rebalance_proposal
+from app.services.rebalancing import (
+    create_rebalance_proposal,
+    get_rebalance_proposal,
+    preview_rebalance_proposal,
+)
 
 
 @pytest.fixture
@@ -130,6 +134,111 @@ def test_proposal_uses_whole_shares_and_does_not_execute(rebalance_db, monkeypat
     assert first.status == "PENDING"
 
 
+def test_preview_matches_persisted_proposal_without_mutating_portfolio(rebalance_db, monkeypatch):
+    session, user_id, portfolio = rebalance_db
+    session.add(
+        Holding(
+            portfolio_id=portfolio.id,
+            ticker="A",
+            quantity=Decimal("4"),
+            average_cost=Decimal("90"),
+        )
+    )
+    target = _add_target(
+        session,
+        portfolio,
+        [
+            {"ticker": "A", "target_weight": "0.2"},
+            {"ticker": "B", "target_weight": "0.5"},
+        ],
+    )
+    monkeypatch.setattr(
+        rebalance_service.market_data,
+        "get_current_price",
+        lambda _ticker: Decimal("100"),
+    )
+    cash_before = portfolio.cash_balance
+    holdings_before = [
+        (holding.ticker, holding.quantity)
+        for holding in session.query(Holding).filter(Holding.portfolio_id == portfolio.id).all()
+    ]
+    transaction_count_before = session.query(Transaction).filter(
+        Transaction.portfolio_id == portfolio.id
+    ).count()
+
+    preview = preview_rebalance_proposal(session, user_id, portfolio.id, target.id)
+
+    assert preview.recommendation_id == target.id
+    assert session.query(RebalanceProposal).filter(
+        RebalanceProposal.portfolio_id == portfolio.id
+    ).count() == 0
+    assert portfolio.cash_balance == cash_before
+    assert [
+        (holding.ticker, holding.quantity)
+        for holding in session.query(Holding).filter(Holding.portfolio_id == portfolio.id).all()
+    ] == holdings_before
+    assert session.query(Transaction).filter(
+        Transaction.portfolio_id == portfolio.id
+    ).count() == transaction_count_before
+
+    proposal = create_rebalance_proposal(session, user_id, portfolio.id, target.id)
+
+    calculation_fields = (
+        "portfolio_id",
+        "recommendation_id",
+        "portfolio_value",
+        "cash_before",
+        "projected_cash",
+        "buy_total",
+        "sell_total",
+        "estimated_fees",
+        "fee_assumption",
+        "trades",
+        "resulting_weights",
+    )
+    assert {field: getattr(preview, field) for field in calculation_fields} == {
+        field: getattr(proposal, field) for field in calculation_fields
+    }
+    assert proposal.status == "PENDING"
+    assert session.query(RebalanceProposal).filter(
+        RebalanceProposal.portfolio_id == portfolio.id
+    ).count() == 1
+
+
+def test_preview_uses_adopted_target_by_default_and_explicit_target_when_requested(rebalance_db, monkeypatch):
+    session, user_id, portfolio = rebalance_db
+    adopted = _add_target(
+        session,
+        portfolio,
+        [{"ticker": "A", "target_weight": "0.5"}],
+        created_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+    )
+    latest = _add_target(
+        session,
+        portfolio,
+        [{"ticker": "B", "target_weight": "0.5"}],
+        created_at=datetime.now(timezone.utc) + timedelta(seconds=2),
+    )
+    portfolio.adopted_recommendation_id = adopted.id
+    session.commit()
+    monkeypatch.setattr(
+        rebalance_service.market_data,
+        "get_current_price",
+        lambda _ticker: Decimal("100"),
+    )
+
+    default_preview = preview_rebalance_proposal(session, user_id, portfolio.id)
+    explicit_preview = preview_rebalance_proposal(session, user_id, portfolio.id, latest.id)
+
+    assert default_preview.recommendation_id == adopted.id
+    assert [trade.ticker for trade in default_preview.trades] == ["A"]
+    assert explicit_preview.recommendation_id == latest.id
+    assert [trade.ticker for trade in explicit_preview.trades] == ["B"]
+    assert session.query(RebalanceProposal).filter(
+        RebalanceProposal.portfolio_id == portfolio.id
+    ).count() == 0
+
+
 def test_buy_plan_never_exceeds_cash_when_target_is_over_budget(rebalance_db, monkeypatch):
     session, user_id, portfolio = rebalance_db
     portfolio.cash_balance = Decimal("100")
@@ -173,6 +282,11 @@ def test_stale_target_is_rejected(rebalance_db):
 
     with pytest.raises(ValueError, match="stale"):
         create_rebalance_proposal(session, user_id, portfolio.id)
+    with pytest.raises(ValueError, match="stale"):
+        preview_rebalance_proposal(session, user_id, portfolio.id)
+    assert session.query(RebalanceProposal).filter(
+        RebalanceProposal.portfolio_id == portfolio.id
+    ).count() == 0
 
 
 def test_missing_market_price_prevents_proposal(rebalance_db, monkeypatch):
@@ -219,4 +333,7 @@ def test_other_user_cannot_create_rebalance_proposal(rebalance_db, monkeypatch):
         create_rebalance_proposal(session, uuid4(), portfolio.id)
 
     assert exc_info.value.status_code == 404
+    with pytest.raises(HTTPException) as preview_exc_info:
+        preview_rebalance_proposal(session, uuid4(), portfolio.id)
+    assert preview_exc_info.value.status_code == 404
     assert session.query(RebalanceProposal).filter(RebalanceProposal.portfolio_id == portfolio.id).count() == 0

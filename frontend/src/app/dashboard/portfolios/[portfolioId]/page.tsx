@@ -46,7 +46,7 @@ import type {
   PortfolioOverviewItem,
   PortfolioPerformance,
   PortfolioValuation,
-  RebalanceProposal,
+  RebalancePreview,
   RiskAnalytics,
   Transaction,
 } from "@/lib/types/api";
@@ -231,12 +231,11 @@ export default function PortfolioDetailPage() {
     }
     setPlanStatus({ kind: "loading", adoptedAt: loaded.adopted_at });
     try {
-      const proposal = await apiFetch<RebalanceProposal>(`/portfolios/${portfolioId}/rebalance-proposals`, token, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recommendation_id: loaded.adopted_recommendation_id }),
-      });
-      setPlanStatus({ kind: "orders", adoptedAt: loaded.adopted_at, remaining: proposal.trades.length });
+      const preview = await apiFetch<RebalancePreview>(
+        `/portfolios/${portfolioId}/rebalance-proposals/preview?recommendation_id=${encodeURIComponent(loaded.adopted_recommendation_id)}`,
+        token,
+      );
+      setPlanStatus({ kind: "orders", adoptedAt: loaded.adopted_at, remaining: preview.trades.length });
     } catch (err) {
       console.error("Failed to load plan orders:", err);
       setPlanStatus({

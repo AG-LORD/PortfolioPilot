@@ -34,6 +34,20 @@ class RebalanceWeightRead(BaseModel):
     resulting_weight: Decimal
 
 
+class RebalancePreviewRead(BaseModel):
+    portfolio_id: UUID
+    recommendation_id: UUID
+    portfolio_value: Decimal
+    cash_before: Decimal
+    projected_cash: Decimal
+    buy_total: Decimal
+    sell_total: Decimal
+    estimated_fees: Decimal
+    fee_assumption: str
+    trades: list[RebalanceTradeRead]
+    resulting_weights: list[RebalanceWeightRead]
+
+
 class RebalanceProposalRead(BaseModel):
     id: UUID
     portfolio_id: UUID

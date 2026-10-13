@@ -8,7 +8,7 @@ import { apiFetch, getAccessToken } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { getErrorMessage } from "@/lib/errors";
 import { formatPrice } from "@/lib/format";
-import type { BatchTradeItem, RebalanceProposal, Transaction } from "@/lib/types/api";
+import type { BatchTradeItem, RebalancePreview, Transaction } from "@/lib/types/api";
 
 type Row = {
   key: string;
@@ -31,8 +31,8 @@ type Props = {
   onRecorded?: () => void;
 };
 
-function rowsFrom(proposal: RebalanceProposal): Row[] {
-  return proposal.trades.map((trade) => ({
+function rowsFrom(preview: RebalancePreview): Row[] {
+  return preview.trades.map((trade) => ({
     key: `${trade.side}-${trade.ticker}`,
     checked: false,
     side: trade.side,
@@ -70,13 +70,12 @@ export function OrderChecklist({ portfolioId, recommendationId, planCapital, onR
   const load = useCallback(
     async (accessToken: string) => {
       try {
-        const proposal = await apiFetch<RebalanceProposal>(`/portfolios/${portfolioId}/rebalance-proposals`, accessToken, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ recommendation_id: recommendationId }),
-        });
-        setRows(rowsFrom(proposal));
-        setPortfolioValue(proposal.portfolio_value);
+        const preview = await apiFetch<RebalancePreview>(
+          `/portfolios/${portfolioId}/rebalance-proposals/preview?recommendation_id=${encodeURIComponent(recommendationId)}`,
+          accessToken,
+        );
+        setRows(rowsFrom(preview));
+        setPortfolioValue(preview.portfolio_value);
         setLoadError(null);
       } catch (err) {
         console.error("Failed to load order checklist:", err);

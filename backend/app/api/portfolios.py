@@ -26,6 +26,7 @@ from app.schemas.rebalance import (
     RebalanceExecutionRequest,
     RebalanceProposalRead,
     RebalanceProposalRequest,
+    RebalancePreviewRead,
 )
 from app.schemas.recommendation import (
     RecommendationRead,
@@ -62,7 +63,11 @@ from app.services.risk_analytics import (
     DEFAULT_VAR_CONFIDENCE,
     get_portfolio_risk_analytics,
 )
-from app.services.rebalancing import create_rebalance_proposal, get_rebalance_proposal
+from app.services.rebalancing import (
+    create_rebalance_proposal,
+    get_rebalance_proposal,
+    preview_rebalance_proposal,
+)
 from app.services.rebalance_execution import RebalanceExecutionConflict, execute_rebalance_proposal
 from app.services.snapshots import create_portfolio_snapshot
 from app.services.transactions import execute_transaction, execute_transaction_batch, list_transactions
@@ -206,6 +211,29 @@ def create_portfolio_rebalance_proposal(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Market prices are unavailable for a rebalancing proposal.",
+        ) from exc
+
+
+# Declared before /{proposal_id} so "preview" is not parsed as a proposal ID.
+@router.get(
+    "/{portfolio_id}/rebalance-proposals/preview",
+    response_model=RebalancePreviewRead,
+)
+def preview_portfolio_rebalance_proposal(
+    portfolio_id: UUID,
+    recommendation_id: UUID | None = Query(default=None),
+    user_id=Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    try:
+        return preview_rebalance_proposal(db, user_id, portfolio_id, recommendation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except MarketDataUnavailableError as exc:
+        logger.warning("Rebalance preview pricing failed for portfolio %s: %s", portfolio_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Market prices are unavailable for a rebalancing preview.",
         ) from exc
 
 

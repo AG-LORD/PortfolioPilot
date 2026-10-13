@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.models import Holding, Portfolio, RebalanceProposal, Transaction
 from app.dependencies import get_current_user_id, get_db
 from app.main import app
-from app.schemas.rebalance import RebalanceExecutionRequest
+from app.schemas.rebalance import RebalanceExecutionRequest, RebalancePreviewRead
 from app.services import rebalancing as rebalance_service
 from app.services.market_data import MarketDataUnavailableError
 from app.services.rebalance_execution import (
@@ -52,7 +52,7 @@ def test_api_rebalance_requires_confirmation_and_executes_after_confirm(rebalanc
             average_cost=Decimal("90"),
         )
     )
-    _add_target(
+    target = _add_target(
         session,
         portfolio,
         [
@@ -69,12 +69,32 @@ def test_api_rebalance_requires_confirmation_and_executes_after_confirm(rebalanc
     app.dependency_overrides[get_current_user_id] = lambda: user_id
     try:
         with TestClient(app) as client:
+            preview_response = client.get(
+                f"/portfolios/{portfolio.id}/rebalance-proposals/preview",
+                params={"recommendation_id": str(target.id)},
+            )
+            assert preview_response.status_code == 200, preview_response.text
+            preview_data = preview_response.json()
+            assert not {"id", "status", "created_at"} & preview_data.keys()
+            assert preview_data["recommendation_id"] == str(target.id)
+            assert session.query(RebalanceProposal).filter(
+                RebalanceProposal.portfolio_id == portfolio.id
+            ).count() == 0
+
             proposal_response = client.post(
                 f"/portfolios/{portfolio.id}/rebalance-proposals",
                 json={},
             )
             assert proposal_response.status_code == 201, proposal_response.text
-            proposal_id = proposal_response.json()["id"]
+            proposal_data = proposal_response.json()
+            proposal_id = proposal_data["id"]
+            assert {"id", "status", "created_at"} <= proposal_data.keys()
+            assert RebalancePreviewRead.model_validate(proposal_data) == RebalancePreviewRead.model_validate(
+                preview_data
+            )
+            assert session.query(RebalanceProposal).filter(
+                RebalanceProposal.portfolio_id == portfolio.id
+            ).count() == 1
             refused = client.post(
                 f"/portfolios/{portfolio.id}/rebalance-proposals/{proposal_id}/execute",
                 json={"confirm": False},

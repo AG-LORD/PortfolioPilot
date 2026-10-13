@@ -117,12 +117,9 @@ export type RebalanceProposalRequest = {
   recommendation_id: string | null;
 };
 
-export type RebalanceProposal = {
-  id: string;
+type RebalanceCalculationFields = {
   portfolio_id: string;
   recommendation_id: string;
-  created_at: string;
-  status: "PENDING" | "EXECUTED" | "EXPIRED";
   portfolio_value: string;
   cash_before: string;
   projected_cash: string;
@@ -132,6 +129,14 @@ export type RebalanceProposal = {
   fee_assumption: string;
   trades: RebalanceTrade[];
   resulting_weights: RebalanceWeight[];
+};
+
+export type RebalancePreview = RebalanceCalculationFields;
+
+export type RebalanceProposal = RebalanceCalculationFields & {
+  id: string;
+  created_at: string;
+  status: "PENDING" | "EXECUTED" | "EXPIRED";
 };
 
 export type OverviewTotals = {

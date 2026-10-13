@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import Holding, Portfolio, RebalanceProposal, RecommendationSnapshot
 from app.schemas.rebalance import (
     RebalanceProposalRead,
+    RebalancePreviewRead,
     RebalanceTradeRead,
     RebalanceWeightRead,
 )
@@ -58,12 +59,12 @@ def _proposal_read(proposal: RebalanceProposal) -> RebalanceProposalRead:
     )
 
 
-def create_rebalance_proposal(
+def _calculate_rebalance_preview(
     db: Session,
     user_id: UUID,
     portfolio_id: UUID,
     recommendation_id: UUID | None = None,
-) -> RebalanceProposalRead:
+) -> tuple[RebalancePreviewRead, str]:
     portfolio = get_portfolio(db, user_id, portfolio_id)
     if recommendation_id is None:
         # The adopted plan when set, else the latest recommendation.
@@ -191,10 +192,9 @@ def create_rebalance_proposal(
             }
         )
 
-    proposal = RebalanceProposal(
+    preview = RebalancePreviewRead(
         portfolio_id=portfolio_id,
         recommendation_id=target.id,
-        state_fingerprint=_fingerprint(portfolio, holdings, target, prices),
         portfolio_value=total_value,
         cash_before=portfolio.cash_balance,
         projected_cash=cash_after_sells,
@@ -202,14 +202,46 @@ def create_rebalance_proposal(
         sell_total=sell_total,
         estimated_fees=ZERO,
         fee_assumption=FEE_ASSUMPTION,
-        trades=[
-            RebalanceTradeRead.model_validate(item).model_dump(mode="json")
-            for item in trades
-        ],
-        resulting_weights=[
-            RebalanceWeightRead.model_validate(item).model_dump(mode="json")
-            for item in resulting_weights
-        ],
+        trades=[RebalanceTradeRead.model_validate(item) for item in trades],
+        resulting_weights=[RebalanceWeightRead.model_validate(item) for item in resulting_weights],
+    )
+    return preview, _fingerprint(portfolio, holdings, target, prices)
+
+
+def preview_rebalance_proposal(
+    db: Session,
+    user_id: UUID,
+    portfolio_id: UUID,
+    recommendation_id: UUID | None = None,
+) -> RebalancePreviewRead:
+    preview, _fingerprint_value = _calculate_rebalance_preview(
+        db, user_id, portfolio_id, recommendation_id
+    )
+    return preview
+
+
+def create_rebalance_proposal(
+    db: Session,
+    user_id: UUID,
+    portfolio_id: UUID,
+    recommendation_id: UUID | None = None,
+) -> RebalanceProposalRead:
+    preview, fingerprint = _calculate_rebalance_preview(
+        db, user_id, portfolio_id, recommendation_id
+    )
+    proposal = RebalanceProposal(
+        portfolio_id=preview.portfolio_id,
+        recommendation_id=preview.recommendation_id,
+        state_fingerprint=fingerprint,
+        portfolio_value=preview.portfolio_value,
+        cash_before=preview.cash_before,
+        projected_cash=preview.projected_cash,
+        buy_total=preview.buy_total,
+        sell_total=preview.sell_total,
+        estimated_fees=preview.estimated_fees,
+        fee_assumption=preview.fee_assumption,
+        trades=[trade.model_dump(mode="json") for trade in preview.trades],
+        resulting_weights=[weight.model_dump(mode="json") for weight in preview.resulting_weights],
     )
     db.add(proposal)
     db.commit()
