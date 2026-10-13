@@ -197,7 +197,8 @@ def test_size_allocation_rounds_sub_paisa_capital_down_to_two_decimals():
 def test_size_allocation_metrics_match_numpy():
     target, returns, cov, sized = _sized_example(Decimal("100000"))
     w = np.array([float(a.target_weight) for a in target.allocations])
-    mu = np.array([float(r) for r in returns])
+    # The plan's return uses the shrunk estimates the optimizer used.
+    mu = np.array([float(a.expected_return_used) for a in target.allocations])
     sigma = np.array([[float(v) for v in row] for row in cov])
 
     assert abs(float(sized.expected_portfolio_return) - float(w @ mu)) < 1e-6

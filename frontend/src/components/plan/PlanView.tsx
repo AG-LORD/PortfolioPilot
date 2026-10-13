@@ -34,6 +34,7 @@ export function notSelectedReasonLabel(item: NotSelectedItem, maxSectorWeight: s
       maxSectorWeight != null
         ? `Sector limit reached (${item.sector ?? "its sector"}, max ${formatPercent(maxSectorWeight, 0)})`
         : `Sector limit reached (${item.sector ?? "its sector"})`,
+    too_small: "Position would be too small to be worth buying",
     risk_limit: "Left out to stay within your risk limit",
   };
   return labels[item.reason];
@@ -46,6 +47,12 @@ function limitLabel(allocation: Recommendation["allocations"][number]): string |
     return "At your per-stock limit";
   }
   return null;
+}
+
+// The estimate the optimizer used (pulled toward the average); older
+// recommendations only stored the model's own estimate.
+function planEstimate(item: { expected_return: string; expected_return_used?: string | null }): string {
+  return item.expected_return_used ?? item.expected_return;
 }
 
 // Percentages on the plan page use one decimal.
@@ -70,6 +77,7 @@ export function planReasonSentence(recommendation: Recommendation): string {
   const falling = notSelected.filter((item) => item.reason === "negative_estimate").length;
   const sectorCapped = notSelected.filter((item) => item.reason === "sector_limit").length;
   const riskier = notSelected.filter((item) => item.reason === "risk_tradeoff" || item.reason === "risk_limit").length;
+  const tooSmall = notSelected.filter((item) => item.reason === "too_small").length;
   const considered = recommendation.allocations.length + notSelected.length;
   const noData = recommendation.excluded.length;
   const scope = recommendation.universe === "NIFTY50" ? `the ${considered} NIFTY 50 stocks analysed` : `your ${considered} stocks`;
@@ -86,6 +94,7 @@ export function planReasonSentence(recommendation: Recommendation): string {
       falling > 0 ? `${falling} the model expects to fall` : null,
       riskier > 0 ? `${riskier} add too much risk for their expected return` : null,
       sectorCapped > 0 ? `${sectorCapped} hit a sector limit` : null,
+      tooSmall > 0 ? `${tooSmall} would be too small a position to be worth buying` : null,
     ].filter(Boolean);
     sentence = `${leftOut}: ${parts.join(", ")}.`;
   }
@@ -187,7 +196,11 @@ export function PlanView({ recommendation, adopted, adoptedAt, onAdopt }: Props)
               <Metric
                 label="Estimated yearly return"
                 value={pct(recommendation.expected_portfolio_return)}
-                info="A model estimate from past market data, not a guaranteed return."
+                info={
+                  recommendation.allocations.some((a) => a.expected_return_used != null)
+                    ? "Model estimates are pulled toward the average across stocks to avoid over-confidence."
+                    : "A model estimate from past market data, not a guaranteed return."
+                }
               />
               <Metric
                 label="Expected yearly swings"
@@ -256,8 +269,8 @@ export function PlanView({ recommendation, adopted, adoptedAt, onAdopt }: Props)
                         <strong>{a.ticker}</strong>
                         {a.sector && <small>{a.sector}</small>}
                       </td>
-                      <td className={cn("font-semibold tabular-nums", Number(a.expected_return) > 0 ? "text-success" : "text-destructive")}>
-                        {pct(a.expected_return)}
+                      <td className={cn("font-semibold tabular-nums", Number(planEstimate(a)) > 0 ? "text-success" : "text-destructive")}>
+                        {pct(planEstimate(a))}
                         {a.clipped && (
                           <span className="ml-1 text-[11px] font-medium text-muted-foreground" title="Estimate was capped to the model's historical range.">
                             (capped)
@@ -305,8 +318,8 @@ export function PlanView({ recommendation, adopted, adoptedAt, onAdopt }: Props)
                   <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
                     <div>
                       <dt className="text-muted-foreground">Estimate</dt>
-                      <dd className={cn("font-semibold", Number(a.expected_return) > 0 ? "text-success" : "text-destructive")}>
-                        {pct(a.expected_return)}
+                      <dd className={cn("font-semibold", Number(planEstimate(a)) > 0 ? "text-success" : "text-destructive")}>
+                        {pct(planEstimate(a))}
                       </dd>
                     </div>
                     <div>
@@ -508,6 +521,7 @@ export function PlanView({ recommendation, adopted, adoptedAt, onAdopt }: Props)
           drivers={drawerAllocation?.drivers}
           typicalEstimate={drawerAllocation?.typical_estimate ?? null}
           clipped={drawerAllocation?.clipped ?? false}
+          estimateUsed={drawerAllocation?.expected_return_used ?? drawerNotSelected?.expected_return_used ?? null}
           onClose={() => setDrawer(null)}
         />
       )}

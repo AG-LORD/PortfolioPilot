@@ -161,6 +161,8 @@ type Props = {
   drivers?: AllocationDriver[];
   typicalEstimate?: string | null;
   clipped?: boolean;
+  // The shrunk estimate the plan used; null on recommendations saved before shrinkage.
+  estimateUsed?: string | null;
   onClose: () => void;
 };
 
@@ -173,6 +175,7 @@ export function StockAnalysisDrawer({
   drivers = [],
   typicalEstimate = null,
   clipped = false,
+  estimateUsed = null,
   onClose,
 }: Props) {
   const hasDrivers = drivers.length > 0;
@@ -239,8 +242,15 @@ export function StockAnalysisDrawer({
         {analysis && (
           <>
             <div className="mt-7 grid grid-cols-2 gap-3">
+              {estimateUsed !== null && (
+                <Metric
+                  label="Estimate used for your plan"
+                  value={formatPercent(estimateUsed, 1)}
+                  info="Model estimates are pulled toward the average across stocks to avoid over-confidence."
+                />
+              )}
               <Metric
-                label="Estimated return"
+                label={estimateUsed !== null ? "Model's raw estimate" : "Estimated return"}
                 value={percentOrDash(analysis.expected_return_annual, "n/a")}
                 note={
                   analysis.expected_return_source === null

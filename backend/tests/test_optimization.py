@@ -494,3 +494,94 @@ def test_all_cash_is_still_feasible_and_negative_estimates_are_never_bought():
     assert by_ticker["A"].expected_return_used > 0
     assert by_ticker["A"].target_weight == 0
     assert by_ticker["B"].target_weight > 0
+
+
+# --- minimum position ------------------------------------------------------------
+
+
+def _random_problem(seed, n=25):
+    rng = np.random.default_rng(seed)
+    factors = rng.normal(size=(n, 3)) * 0.12
+    sigma = factors @ factors.T + np.diag(rng.uniform(0.01, 0.08, size=n))
+    mu = rng.uniform(-0.05, 0.25, size=n)
+    tickers = [f"T{i:02d}" for i in range(n)]
+    sector_map = {t: f"S{i % 6}" for i, t in enumerate(tickers) if i % 7 != 0}
+    return (
+        tickers,
+        [Decimal(str(round(m, 6))) for m in mu],
+        [[Decimal(str(round(v, 8))) for v in row] for row in sigma],
+        sector_map,
+    )
+
+
+def test_small_positions_are_dropped_and_recorded_as_too_small():
+    from app.services.optimization import MIN_POSITION_WEIGHT
+
+    # Without a minimum, HIGH would get 0.05 / (8 * 1.0) = 0.625%.
+    cov = _diag_cov([Decimal("0.01"), Decimal("0.04"), Decimal("1.0")])
+    returns = [Decimal("0.05")] * 3
+    no_min = optimize_target_weights(
+        ["LOW", "MID", "HIGH"], returns, cov, Decimal("1"), Decimal("1"), risk_aversion=8.0, shrinkage_alpha=1.0,
+        min_position_weight=0.0,
+    )
+    assert 0 < float(no_min.allocations[2].target_weight) < MIN_POSITION_WEIGHT
+
+    result = optimize_target_weights(
+        ["LOW", "MID", "HIGH"], returns, cov, Decimal("1"), Decimal("1"), risk_aversion=8.0, shrinkage_alpha=1.0
+    )
+    w = {a.ticker: float(a.target_weight) for a in result.allocations}
+    assert w["HIGH"] == 0
+    assert result.too_small == {"HIGH"}
+    assert w["LOW"] == pytest.approx(0.625, abs=1e-3)
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("risk_aversion", [2.0, 4.0, 8.0])
+def test_no_final_weight_below_minimum_and_resolve_respects_all_constraints(seed, risk_aversion):
+    from app.services.optimization import MIN_POSITION_WEIGHT, sector_groups
+
+    tickers, returns, cov, sector_map = _random_problem(seed)
+    max_pos, target_vol, max_sector = Decimal("0.10"), Decimal("0.15"), Decimal("0.25")
+    result = optimize_target_weights(
+        tickers, returns, cov, max_pos, target_vol, max_sector, sector_map, risk_aversion=risk_aversion
+    )
+    w = np.array([float(a.target_weight) for a in result.allocations])
+    assert not np.any((w > 0) & (w < MIN_POSITION_WEIGHT))
+    assert np.all(w >= 0) and np.all(w <= float(max_pos) + 1e-4)
+    assert sum(a.target_weight for a in result.allocations) + result.cash_weight == Decimal("1")
+    assert result.cash_weight >= 0
+    assert _volatility(result, cov) <= float(target_vol) + 1e-4
+    groups = sector_groups(tickers, sector_map)
+    for group in set(groups):
+        assert sum(w[i] for i, g in enumerate(groups) if g == group) <= float(max_sector) + 1e-4
+    for i, ticker in enumerate(tickers):
+        if returns[i] <= 0:
+            assert w[i] == 0
+        if ticker in result.too_small:
+            assert w[i] == 0 and returns[i] > 0
+
+
+def test_too_small_reason_recorded_on_the_plan():
+    from app.services.recommendation import TOO_SMALL, size_allocation
+
+    cov = _diag_cov([Decimal("0.01"), Decimal("0.04"), Decimal("1.0")])
+    returns = [Decimal("0.05")] * 3
+    target = optimize_target_weights(
+        ["LOW", "MID", "HIGH"], returns, cov, Decimal("1"), Decimal("1"), risk_aversion=8.0, shrinkage_alpha=1.0
+    )
+    sized = size_allocation(target, returns, cov, Decimal("100000"), Decimal("1"))
+    assert [(n.ticker, n.reason) for n in sized.not_selected] == [("HIGH", TOO_SMALL)]
+    assert "HIGH" not in {a.ticker for a in sized.allocations}
+
+
+def test_plan_expected_return_uses_the_shrunk_estimates():
+    from app.services.recommendation import size_allocation
+
+    # Mean 0.10, so the shrunk estimates are 0.20, 0.10 and 0.00 (C is never bought).
+    returns = [Decimal("0.30"), Decimal("0.10"), Decimal("-0.10")]
+    cov = _diag_cov([Decimal("0.04")] * 3)
+    target = optimize_target_weights(["A", "B", "C"], returns, cov, Decimal("0.5"), Decimal("1"))
+    sized = size_allocation(target, returns, cov, Decimal("100000"), Decimal("0.5"))
+    w = [float(a.target_weight) for a in target.allocations]
+    assert float(sized.expected_portfolio_return) == pytest.approx(w[0] * 0.20 + w[1] * 0.10, abs=1e-6)
+    assert float(sized.expected_portfolio_return) < w[0] * 0.30 + w[1] * 0.10 - 0.01

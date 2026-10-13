@@ -56,6 +56,7 @@ POSITION_LIMIT_TOLERANCE = Decimal("0.0001")
 NEGATIVE_ESTIMATE = "negative_estimate"  # expected_return <= 0: holding cash beats it
 SECTOR_LIMIT = "sector_limit"  # its sector's max_sector_weight cap is binding
 RISK_TRADEOFF = "risk_tradeoff"  # adds more risk than return for the profile's risk aversion
+TOO_SMALL = "too_small"  # its weight was below the optimizer's MIN_POSITION_WEIGHT
 # Reason stored by snapshots saved before the mean-variance optimizer; still readable.
 RISK_LIMIT = "risk_limit"
 
@@ -152,7 +153,10 @@ def size_allocation(
     typical_estimates = typical_estimates or {}
     capital = capital.quantize(AMOUNT_QUANTUM, rounding=ROUND_DOWN)
     w = np.array([float(a.target_weight) for a in target.allocations])
-    mu = np.array([float(r) for r in expected_returns])
+    # The plan's estimate uses what the optimizer used (the shrunk estimates);
+    # the model's own estimates only when the optimizer did not report them.
+    used = [a.expected_return_used for a in target.allocations]
+    mu = np.array([float(r) for r in (used if all(u is not None for u in used) else expected_returns)])
     sigma = np.array([[float(v) for v in row] for row in covariance])
 
     portfolio_return = float(w @ mu)
@@ -170,6 +174,8 @@ def size_allocation(
     def not_selected_reason(a) -> str:
         if a.expected_return <= 0:
             return NEGATIVE_ESTIMATE
+        if a.ticker in target.too_small:
+            return TOO_SMALL
         if a.sector_group is not None and a.sector_group in binding:
             return SECTOR_LIMIT
         return RISK_TRADEOFF

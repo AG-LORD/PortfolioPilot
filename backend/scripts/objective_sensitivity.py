@@ -7,9 +7,11 @@ For the NIFTY50 universe and the ML expected returns (today's stored nightly
 forecasts; tickers without one are forecast on request, as in a live
 recommendation) it prints, per risk profile and for both objectives
 (max_return, mean_variance): number of holdings, max weight, min non-zero
-weight, cash %, ex-ante return (weights x the model's own estimates),
-ex-ante volatility and the number of sectors held. Then a lambda grid
-(1, 2, 4, 8, 16) for the Moderate profile.
+weight, cash %, ex-ante return (weights x the shrunk estimates the
+optimizer used), ex-ante volatility, the number of sectors held and the
+number of stocks dropped as too small; "min w ok" checks that no weight is in
+(0, MIN_POSITION_WEIGHT). Then a lambda grid (1, 2, 4, 8, 16) for the
+Moderate profile.
 
 Everything runs inside one database transaction that is rolled back at the
 end, so price-cache refreshes triggered while loading inputs are not kept.
@@ -26,11 +28,13 @@ from app.services.expected_returns import get_expected_returns_for_universe
 from app.services.optimization import (
     MAX_RETURN,
     MEAN_VARIANCE,
+    MIN_POSITION_WEIGHT,
     RISK_AVERSION,
     TargetAllocationResult,
     optimize_target_weights,
     sector_groups,
     sector_map_for,
+    shrink_expected_returns,
 )
 from app.services.recommendation import _ml_provider
 from app.services.universe import get_universe
@@ -54,7 +58,7 @@ PROFILES = [
     Profile("aggressive", Decimal("0.20"), Decimal("0.40"), Decimal("0.25")),
 ]
 
-HEADER = f"{'profile':<13}{'objective':<17}{'holdings':>9}{'max w':>8}{'min w':>8}{'cash':>8}{'return':>9}{'vol':>8}{'sectors':>9}"
+HEADER = f"{'profile':<13}{'objective':<17}{'holdings':>9}{'max w':>8}{'min w':>8}{'cash':>8}{'return':>9}{'vol':>8}{'sectors':>9}{'dropped':>9}{'min w ok':>10}"
 
 
 def _row(label: str, objective: str, result: TargetAllocationResult, mu: np.ndarray, sigma: np.ndarray, groups: list[str]) -> str:
@@ -65,9 +69,10 @@ def _row(label: str, objective: str, result: TargetAllocationResult, mu: np.ndar
     sectors = len({groups[i] for i in np.flatnonzero(held)})
     max_w = w[held].max() if held.any() else 0.0
     min_w = w[held].min() if held.any() else 0.0
+    min_ok = "yes" if not np.any(held & (w < MIN_POSITION_WEIGHT)) else "NO"
     return (
         f"{label:<13}{objective:<17}{int(held.sum()):>9}{max_w:>8.1%}{min_w:>8.1%}"
-        f"{float(result.cash_weight):>8.1%}{ret:>9.2%}{vol:>8.2%}{sectors:>9}"
+        f"{float(result.cash_weight):>8.1%}{ret:>9.2%}{vol:>8.2%}{sectors:>9}{len(result.too_small):>9}{min_ok:>10}"
     )
 
 
@@ -85,7 +90,8 @@ def main() -> None:
         connection.close()
 
     tickers = data.inputs.tickers
-    mu = np.array([float(r) for r in data.inputs.expected_returns])
+    mu_raw = np.array([float(r) for r in data.inputs.expected_returns])
+    mu = shrink_expected_returns(mu_raw)
     sigma = np.array([[float(v) for v in row] for row in data.inputs.covariance])
     sectors = sector_map_for(tickers)
     groups = sector_groups(tickers, sectors)
@@ -94,9 +100,12 @@ def main() -> None:
     print(f"Universe {UNIVERSE} (list as of {as_of}): {len(tickers)} eligible, {len(data.excluded)} excluded")
     print(
         f"Expected returns: {ml_count} ML ({data.forecast_source or 'n/a'}, forecast date {data.forecast_as_of}), "
-        f"{len(tickers) - ml_count} historical fallback; {int((mu > 0).sum())} positive"
+        f"{len(tickers) - ml_count} historical fallback; {int((mu_raw > 0).sum())} positive"
     )
-    print("Return = weights x the model's own (unshrunk) estimates; both objectives use shrunk estimates and the sector cap.")
+    print(
+        "Return = weights x the shrunk estimates (as on the plan); both objectives use the sector cap "
+        f"and a {MIN_POSITION_WEIGHT:.0%} minimum position."
+    )
     print()
     print(HEADER)
     for profile in PROFILES:

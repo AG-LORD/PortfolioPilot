@@ -20,6 +20,11 @@ portfolio volatility <= target_volatility, cash >= 0 and, when a sector map
 is given, the weight of every sector <= max_sector_weight. A ticker whose
 UNshrunk estimate is <= 0 is never bought (upper bound 0): shrinkage pulls
 estimates toward the mean and must not turn "expected to fall" into a buy.
+
+Minimum position: a stock whose weight ends up in (0, MIN_POSITION_WEIGHT)
+is fixed to 0 and the problem is re-solved without it, until no such weight
+remains (at most MIN_POSITION_ITERATIONS re-solves). Excluding stocks keeps
+"all cash" feasible, so a solution still exists.
 """
 
 from dataclasses import dataclass, field
@@ -48,6 +53,10 @@ DEFAULT_RISK_AVERSION = RISK_AVERSION["moderate"]
 # Weight on each ticker's own estimate; the rest goes to the cross-sectional
 # mean. Damps noisy forecasts without changing their ranking.
 SHRINKAGE_ALPHA = 0.5
+
+# A position below this weight is not worth buying; see the module docstring.
+MIN_POSITION_WEIGHT = 0.02
+MIN_POSITION_ITERATIONS = 5
 
 # Solver tolerance for feasibility checks and for calling a limit binding.
 FEASIBILITY_TOLERANCE = 1e-4
@@ -79,6 +88,8 @@ class TargetAllocationResult:
     binding_sectors: set[str] = field(default_factory=set)
     objective: Objective = MEAN_VARIANCE
     risk_aversion: float | None = None
+    # Tickers removed because their weight was below MIN_POSITION_WEIGHT.
+    too_small: set[str] = field(default_factory=set)
 
     def __iter__(self):
         return iter(self.allocations)
@@ -117,6 +128,7 @@ def optimize_target_weights(
     objective: Objective = MEAN_VARIANCE,
     risk_aversion: float = DEFAULT_RISK_AVERSION,
     shrinkage_alpha: float = SHRINKAGE_ALPHA,
+    min_position_weight: float = MIN_POSITION_WEIGHT,
 ) -> TargetAllocationResult:
     n = len(tickers)
     if n == 0:
@@ -137,7 +149,7 @@ def optimize_target_weights(
 
     # Variables: n asset weights followed by 1 cash weight. Never buy a stock
     # the model expects to fall, whatever shrinkage did to its estimate.
-    bounds = [(0.0, max_pos if mu_raw[i] > 0 else 0.0) for i in range(n)] + [(0.0, 1.0)]
+    upper = np.array([max_pos if mu_raw[i] > 0 else 0.0 for i in range(n)])
 
     # Volatility as a variance constraint: smooth at w = 0, unlike the square root.
     constraints = [
@@ -175,42 +187,70 @@ def optimize_target_weights(
             grad = grad - lam * (sigma @ w[:n])
         return np.concatenate([-grad, [0.0]])
 
-    init_asset_weight = min(max_pos, 1.0 / (n + 1))
-    x0 = np.array([init_asset_weight if upper > 0 else 0.0 for _, upper in bounds[:n]] + [0.0])
-    x0[n] = 1.0 - x0[:n].sum()
-
-    result = minimize(
-        negative_utility,
-        x0,
-        jac=negative_utility_grad,
-        method="SLSQP",
-        bounds=bounds,
-        constraints=constraints,
-        options={"maxiter": 500, "ftol": 1e-12},
-    )
-
-    weights = result.x
-    asset_weights = np.clip(weights[:n], 0.0, None)
-    cash_val = weights[n]
     tol = FEASIBILITY_TOLERANCE
-    portfolio_vol = np.sqrt(max(asset_weights @ sigma @ asset_weights, 0.0))
-    sector_ok = all(
-        asset_weights[idx].sum() <= float(max_sector_weight) + tol for idx in group_members.values()
-    )
-    feasible = (
-        result.success
-        and abs(np.sum(weights) - 1.0) < tol
-        and np.all(weights[:n] >= -tol)
-        and cash_val >= -tol
-        and np.all(asset_weights <= max_pos + tol)
-        and portfolio_vol <= target_vol + tol
-        and sector_ok
-    )
-    if not feasible:
+
+    def feasible(weights, success: bool) -> bool:
+        assets = np.clip(weights[:n], 0.0, None)
+        vol = np.sqrt(max(assets @ sigma @ assets, 0.0))
+        return bool(
+            success
+            and abs(np.sum(weights) - 1.0) < tol
+            and np.all(weights[:n] >= -tol)
+            and weights[n] >= -tol
+            and np.all(assets <= upper + tol)
+            and vol <= target_vol + tol
+            and all(assets[idx].sum() <= float(max_sector_weight) + tol for idx in group_members.values())
+        )
+
+    def solve():
+        bounds = [(0.0, float(u)) for u in upper] + [(0.0, 1.0)]
+        x0 = np.append(np.where(upper > 0, min(max_pos, 1.0 / (n + 1)), 0.0), 0.0)
+        x0[n] = 1.0 - x0[:n].sum()
+        result = minimize(
+            negative_utility,
+            x0,
+            jac=negative_utility_grad,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"maxiter": 500, "ftol": 1e-12},
+        )
+        return result.x, feasible(result.x, result.success)
+
+    weights, ok = solve()
+    if not ok:
         raise InfeasibleAllocationError(
             "No feasible target allocation satisfies the risk-profile constraints "
             "(max position weight, max sector weight, target volatility)."
         )
+
+    # Drop positions too small to be worth buying and re-solve without them.
+    # A weight counts as held when it survives rounding to 6 dp.
+    def small_positions(weights):
+        assets = weights[:n]
+        return np.flatnonzero((np.round(assets, 6) > 0) & (assets < min_position_weight - 1e-9))
+
+    too_small: set[int] = set()
+    for _ in range(MIN_POSITION_ITERATIONS):
+        small = small_positions(weights)
+        if small.size == 0:
+            break
+        too_small.update(int(i) for i in small)
+        upper[small] = 0.0
+        resolved, ok = solve()
+        weights = resolved if ok else _to_cash(weights, small, n)
+    # Any left after the last re-solve go to cash directly. That keeps the
+    # position and sector caps; scale down if it raised volatility.
+    small = small_positions(weights)
+    if small.size:
+        too_small.update(int(i) for i in small)
+        weights = _to_cash(weights, small, n)
+    variance = weights[:n] @ sigma @ weights[:n]
+    if variance > target_vol**2:
+        weights[:n] *= target_vol / np.sqrt(variance)
+        weights[n] = 1.0 - weights[:n].sum()
+
+    asset_weights = np.clip(weights[:n], 0.0, None)
 
     binding = {
         group
@@ -221,7 +261,17 @@ def optimize_target_weights(
     result_weights.binding_sectors = binding
     result_weights.objective = objective
     result_weights.risk_aversion = lam if objective == MEAN_VARIANCE else None
+    result_weights.too_small = {tickers[i] for i in too_small}
     return result_weights
+
+
+def _to_cash(weights, indices, n: int):
+    """A copy of weights with the given assets moved to cash."""
+    weights = weights.copy()
+    weights[indices] = 0.0
+    weights[:n] = np.clip(weights[:n], 0.0, None)
+    weights[n] = 1.0 - weights[:n].sum()
+    return weights
 
 
 def _finalize_weights(tickers: list[str], asset_weights, mu, mu_used=None, groups=None) -> TargetAllocationResult:

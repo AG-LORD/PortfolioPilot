@@ -72,7 +72,7 @@ holdings, or transactions. A successful result is saved as an immutable
 - **historical:** each ticker's expected return is 252 × the mean of its last 252 daily returns. That is the same definition as the ML evaluation baseline, in annual units.
 - **ml:** a HistGradientBoosting model is trained on the point-in-time feature panel using every row whose 20-day label is already known. It predicts each ticker's latest feature row, and the 20-trading-day forecast is converted to annual units as `forecast × 252 / 20`. A ticker with no feature row on the latest date falls back to its historical estimate, and its `source` is `"historical"`. Training happens on each request; nothing is persisted.
 - Covariance is the same for both models: Ledoit-Wolf on daily returns over the dates common to all eligible tickers, limited to the last 252 of them (at least 30 required), annualized × 252.
-- Weights come from the cash-aware mean-variance optimizer (docs/ML_METHODOLOGY.md, section 10): it maximizes shrunk expected return minus a risk penalty set by the profile, subject to `max_position_weight`, `target_volatility` and `max_sector_weight`, and the rest stays in cash. Allocations carry `expected_return_used` (the shrunk estimate) and `limit_reason`; `constraints.max_sector_weight` is included.
+- Weights come from the cash-aware mean-variance optimizer (docs/ML_METHODOLOGY.md, section 10): it maximizes shrunk expected return minus a risk penalty set by the profile, subject to `max_position_weight`, `target_volatility` and `max_sector_weight`, and the rest stays in cash. Allocations carry `expected_return_used` (the shrunk estimate) and `limit_reason`; `expected_portfolio_return` uses the shrunk estimates; positions below 2% are dropped; `constraints.max_sector_weight` is included.
 - `capital` is `cash_balance` rounded down to 0.01. `cash_balance` is stored with 4 decimals, so any sub-paisa remainder (less than ₹0.01) is left unallocated and not reported.
 - `amount = target_weight × capital`, rounded down to 0.01. `cash_amount` is the exact remainder, so amounts + `cash_amount` = `capital`, all with 2 decimals.
 - `at_position_limit` is true when `target_weight` equals `max_position_weight` within 0.0001.
@@ -226,8 +226,9 @@ the portfolio changed after it was saved.
 
 Recommendations also return `not_selected`: every eligible ticker the
 optimizer gave zero weight, with `reason` `negative_estimate`
-(`expected_return <= 0`), `sector_limit` (its sector's cap is binding) or
-`risk_tradeoff` (more risk than return for the profile). Snapshots from before
+(`expected_return <= 0`), `sector_limit` (its sector's cap is binding),
+`too_small` (below the optimizer's 2% minimum position) or `risk_tradeoff`
+(more risk than return for the profile). Snapshots from before
 the mean-variance optimizer may carry `risk_limit`. Snapshots saved before this
 field return `null` (unknown), which is different from `[]` (nothing was left
 out). `sector` on allocations, `not_selected` items and valuation holdings

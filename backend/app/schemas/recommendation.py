@@ -8,9 +8,10 @@ from pydantic import BaseModel, model_validator
 ResponseReturnModel = Literal["historical", "ml"]
 # negative_estimate: expected_return <= 0; sector_limit: its sector's cap is
 # binding; risk_tradeoff: adds more risk than return for the profile's risk
-# aversion. risk_limit only appears on snapshots saved before the
+# aversion; too_small: its weight would be below the optimizer's minimum
+# position. risk_limit only appears on snapshots saved before the
 # mean-variance optimizer (it meant "positive estimate, left out").
-NotSelectedReason = Literal["negative_estimate", "sector_limit", "risk_tradeoff", "risk_limit"]
+NotSelectedReason = Literal["negative_estimate", "sector_limit", "risk_tradeoff", "too_small", "risk_limit"]
 # Why a selected stock did not get more weight; null when no limit is binding.
 LimitReason = Literal["position_limit", "sector_limit"]
 ForecastSource = Literal["precomputed", "on_request"]

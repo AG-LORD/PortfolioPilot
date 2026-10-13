@@ -80,9 +80,11 @@ def _weights_at_signal(
         max_position_weight=max_position_weight,
         target_volatility=target_volatility,
         # Backtest requests carry no risk profile (so no risk aversion or sector
-        # cap): they keep the original max-return objective without shrinkage.
+        # cap): they keep the original max-return objective without shrinkage or
+        # minimum position.
         objective=MAX_RETURN,
         shrinkage_alpha=1.0,
+        min_position_weight=0.0,
     )
     return (
         {item.ticker: item.target_weight for item in allocation.allocations},

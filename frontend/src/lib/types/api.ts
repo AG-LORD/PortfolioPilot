@@ -39,9 +39,9 @@ export type RecommendationAllocation = {
 };
 
 // negative_estimate: expected to fall; sector_limit: its sector's cap is binding;
-// risk_tradeoff: more risk than return at the profile's risk level.
+// risk_tradeoff: more risk than return at the profile's risk level; too_small: position below the minimum.
 // risk_limit only appears on recommendations saved before the mean-variance optimizer.
-export type NotSelectedReason = "negative_estimate" | "sector_limit" | "risk_tradeoff" | "risk_limit";
+export type NotSelectedReason = "negative_estimate" | "sector_limit" | "risk_tradeoff" | "too_small" | "risk_limit";
 
 export type NotSelectedItem = {
   ticker: string;
