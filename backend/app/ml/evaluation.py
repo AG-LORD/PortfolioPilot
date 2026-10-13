@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
@@ -46,17 +47,29 @@ class WalkForwardResult:
     fitted_models: list[dict[str, Pipeline]]
 
 
-def fit_models(train: pd.DataFrame) -> dict[str, Pipeline]:
+def fit_models(train: pd.DataFrame, feature_columns: list[str] = FEATURE_COLUMNS) -> dict[str, Pipeline]:
     return {
-        name: make_model(name).fit(train[FEATURE_COLUMNS], train[LABEL_COLUMN])
+        name: make_model(name).fit(train[feature_columns], train[LABEL_COLUMN])
         for name in MODEL_NAMES
     }
 
 
 def run_walk_forward(
-    panel: pd.DataFrame, n_blocks: int = N_TEST_BLOCKS, horizon: int = DEFAULT_HORIZON
+    panel: pd.DataFrame,
+    n_blocks: int = N_TEST_BLOCKS,
+    horizon: int = DEFAULT_HORIZON,
+    feature_columns: list[str] = FEATURE_COLUMNS,
 ) -> WalkForwardResult:
+    """`feature_columns`: the model inputs (default: the live technical set).
+    Rows and splits depend only on the panel, so runs on the same panel with
+    different columns are scored on identical rows."""
+    feature_columns = list(feature_columns)
+    leaked = {LABEL_COLUMN, BASELINE_COLUMN, "date", "ticker"} & set(feature_columns)
+    if leaked:
+        raise EvaluationError(f"Not model inputs: {sorted(leaked)}")
     labeled = panel[panel[LABEL_COLUMN].notna()].sort_values(["date", "ticker"], ignore_index=True)
+    if not np.isfinite(labeled[feature_columns].to_numpy(dtype=float)).all():
+        raise EvaluationError("Feature values must be finite on every labelled panel row.")
     splits = walk_forward_splits(labeled["date"], n_blocks=n_blocks, horizon=horizon)
 
     blocks = []
@@ -64,7 +77,7 @@ def run_walk_forward(
     for block, split in enumerate(splits):
         train = labeled[labeled["date"].isin(split.train_dates)]
         test = labeled[labeled["date"].isin(split.test_dates) & labeled[BASELINE_COLUMN].notna()]
-        models = fit_models(train)
+        models = fit_models(train, feature_columns)
         fitted_models.append(models)
         if test.empty:
             continue
@@ -73,7 +86,7 @@ def run_walk_forward(
         scored["block"] = block
         scored[BASELINE_MODEL] = test[BASELINE_COLUMN]
         for name, model in models.items():
-            scored[name] = model.predict(test[FEATURE_COLUMNS])
+            scored[name] = model.predict(test[feature_columns])
         blocks.append(scored)
 
     if not blocks:

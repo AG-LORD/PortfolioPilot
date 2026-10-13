@@ -199,9 +199,21 @@ def build_panel_from_prices(
     points_by_ticker: dict[str, list[PricePoint]],
     errors: dict[str, str],
     horizon: int = DEFAULT_HORIZON,
+    groups=None,
 ) -> FeaturePanel:
     """In-memory panel builder (no database). `errors` maps a ticker to the
-    reason its prices could not be fetched."""
+    reason its prices could not be fetched. `groups`: research feature groups
+    (app.ml.feature_groups.registry); None means the technical FEATURE_COLUMNS
+    the live model uses."""
+    if groups is None:
+        columns_used = FEATURE_COLUMNS
+        features_for = compute_features
+    else:
+        # Imported here: the registry imports this module.
+        from app.ml.feature_groups.registry import compute_group_features, feature_columns
+
+        columns_used = feature_columns(groups)
+        features_for = lambda prices: compute_group_features(prices, groups)  # noqa: E731
     frames = []
     excluded: list[ExcludedTicker] = []
 
@@ -226,13 +238,13 @@ def build_panel_from_prices(
             continue
 
         prices = prices_to_frame(points)
-        frame = compute_features(prices).loc[prices.index[MIN_FEATURE_HISTORY]:]
+        frame = features_for(prices).loc[prices.index[MIN_FEATURE_HISTORY]:]
         frame[LABEL_COLUMN] = forward_return(prices["close"], horizon).loc[frame.index]
         frame[BASELINE_COLUMN] = historical_mean_forecast(prices["close"], horizon).loc[frame.index]
         frame.insert(0, "ticker", ticker)
         frames.append(frame.reset_index())
 
-    columns = ["date", "ticker", *FEATURE_COLUMNS, LABEL_COLUMN, BASELINE_COLUMN]
+    columns = ["date", "ticker", *columns_used, LABEL_COLUMN, BASELINE_COLUMN]
     panel = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
     return FeaturePanel(
         panel=panel[columns].sort_values(["date", "ticker"], ignore_index=True),
@@ -246,6 +258,7 @@ def build_feature_panel(
     start: date,
     end: date,
     horizon: int = DEFAULT_HORIZON,
+    groups=None,
 ) -> FeaturePanel:
     """Panel for [start, end) (end exclusive), read through the price cache."""
     # Imported here so this module stays importable without a database; the
@@ -254,4 +267,4 @@ def build_feature_panel(
 
     history = price_history.get_price_history(db, tickers, start, end)
     errors = {ticker: exc.reason for ticker, exc in history.errors.items()}
-    return build_panel_from_prices(tickers, history.points, errors, horizon)
+    return build_panel_from_prices(tickers, history.points, errors, horizon, groups=groups)
